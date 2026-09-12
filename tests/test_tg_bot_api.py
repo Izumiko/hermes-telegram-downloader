@@ -71,6 +71,28 @@ def test_wrap_message_sender():
     assert w.media is None
 
 
+def test_build_bot_status_text_shows_progress():
+    from hermes_telegram_downloader.module.tg.bot_api import build_bot_status_text
+
+    node = SimpleNamespace(task_id=1, task_id_display="0913-1", chat_id=10)
+    result = {
+        10: {
+            99: {
+                "task_id": 1,
+                "task_id_display": "0913-1",
+                "file_name": "cat.png",
+                "total_size": 1000,
+                "down_byte": 400,
+                "download_speed": 100,
+            }
+        }
+    }
+    text = build_bot_status_text(node, result)
+    assert "0913-1" in text
+    assert "cat.png" in text
+    assert "40%" in text
+
+
 def test_pending_consumer_starts_without_recovery_tasks():
     from hermes_telegram_downloader.module.bot import DownloadBot
 
