@@ -1326,6 +1326,11 @@ def main():
         )
 
 
-if __name__ == "__main__":
+def cli():
+    """Console script / module entry point."""
     if _check_config():
         main()
+
+
+if __name__ == "__main__":
+    cli()
