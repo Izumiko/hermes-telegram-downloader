@@ -13,8 +13,8 @@ from pyrogram.handlers import CallbackQueryHandler, MessageHandler
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from ruamel import yaml
 
-import utils
-from module.app import (
+from hermes_telegram_downloader import utils
+from hermes_telegram_downloader.module.app import (
     Application,
     ChatDownloadConfig,
     ForwardStatus,
@@ -24,16 +24,16 @@ from module.app import (
     TaskType,
     UploadStatus,
 )
-from module.download_stat import (
+from hermes_telegram_downloader.module.download_stat import (
     add_failed_download,
     delete_task as _delete_download_progress,
     set_chat_title,
 )
-from module.filter import Filter
-from module.task_store import save_task, complete_task, get_running_tasks, update_task_progress, get_pending_tasks, update_download_state
-from module.get_chat_history_v2 import get_chat_history_v2
-from module.language import Language, _t
-from module.pyrogram_extension import (
+from hermes_telegram_downloader.module.filter import Filter
+from hermes_telegram_downloader.module.task_store import save_task, complete_task, get_running_tasks, update_task_progress, get_pending_tasks, update_download_state
+from hermes_telegram_downloader.module.get_chat_history_v2 import get_chat_history_v2
+from hermes_telegram_downloader.module.language import Language, _t
+from hermes_telegram_downloader.module.pyrogram_extension import (
     check_user_permission,
     get_utf16_length,
     is_flood_wait_active,
@@ -45,8 +45,8 @@ from module.pyrogram_extension import (
     set_meta_data,
     upload_telegram_chat_message,
 )
-from utils.format import replace_date_time, validate_title
-from utils.meta_data import MetaData
+from hermes_telegram_downloader.utils.format import replace_date_time, validate_title
+from hermes_telegram_downloader.utils.meta_data import MetaData
 
 # pylint: disable = C0301, R0902
 
@@ -63,7 +63,7 @@ def _cleanup_stopped_task(node):
     Already-completed entries are left untouched.
     """
     try:
-        from module.download_stat import get_download_result
+        from hermes_telegram_downloader.module.download_stat import get_download_result
         download_result = get_download_result()
         removed = 0
         recorded = 0
@@ -125,7 +125,7 @@ def _record_pending_failures(node):
     to avoid duplicates.
     """
     try:
-        from module.download_stat import get_download_result, get_failed_downloads
+        from hermes_telegram_downloader.module.download_stat import get_download_result, get_failed_downloads
         download_result = get_download_result()
         # Collect existing failed composite keys to avoid duplicates
         existing_keys = {f"{f.get('chat_id', '')}_{f.get('msg_id', '')}" for f in get_failed_downloads()}
@@ -244,7 +244,7 @@ class DownloadBot:
 
             # Check if bot connection has degraded — reconnect if too many
             # consecutive errors and cooldown has passed.
-            from module.pyrogram_extension import _bot_conn_errors, _BOT_RECONNECT_THRESHOLD
+            from hermes_telegram_downloader.module.pyrogram_extension import _bot_conn_errors, _BOT_RECONNECT_THRESHOLD
             if _bot_conn_errors["count"] >= _BOT_RECONNECT_THRESHOLD:
                 now = time.time()
                 if now - _bot_last_reconnect >= _bot_reconnect_cooldown:
@@ -274,10 +274,10 @@ class DownloadBot:
                         _record_pending_failures(value)
                     # Safety net: if media_downloader's immediate complete_task failed,
                     # ensure task is marked complete before removal
-                    from module.task_store import complete_task
+                    from hermes_telegram_downloader.module.task_store import complete_task
                     complete_task(value.task_id)
                     self.remove_task_node(key)
-                    from module.task_store import get_pending_tasks
+                    from hermes_telegram_downloader.module.task_store import get_pending_tasks
                     if get_pending_tasks():
                         _bot.app.loop.create_task(_consume_one_pending())
                 elif value.is_running and not value.is_finish() and not value.is_stop_transmission:
@@ -292,7 +292,7 @@ class DownloadBot:
                         )
                         complete_task(value.task_id)
                         self.remove_task_node(key)
-                        from module.task_store import get_pending_tasks
+                        from hermes_telegram_downloader.module.task_store import get_pending_tasks
                         if get_pending_tasks():
                             _bot.app.loop.create_task(_consume_one_pending())
             await asyncio.sleep(3)
@@ -320,7 +320,7 @@ class DownloadBot:
                 return
 
             # Reset all tasks to pending state so _consume_one_pending picks them up
-            from module.task_store import update_download_state
+            from hermes_telegram_downloader.module.task_store import update_download_state
             for task_data in all_tasks:
                 tid = task_data.get("task_id")
                 if tid is not None and task_data.get("download_state") != "pending":
@@ -356,7 +356,7 @@ class DownloadBot:
 
         # After recovery, update persistent counter to max of all task display IDs
         try:
-            from module.task_store import _set_seq, _parse_seq_from_display, _lock
+            from hermes_telegram_downloader.module.task_store import _set_seq, _parse_seq_from_display, _lock
             max_seq = 0
             import time
             today = time.strftime('%m%d')
@@ -376,7 +376,7 @@ class DownloadBot:
 
     async def _recover_forward_task(self, task_data, node, offset_id):
         """Recover a forward task from last checkpoint."""
-        from module.pyrogram_extension import report_bot_status
+        from hermes_telegram_downloader.module.pyrogram_extension import report_bot_status
         forward_failed = False
         try:
             async for item in get_chat_history_v2(
@@ -405,7 +405,7 @@ class DownloadBot:
 
     async def _recover_direct_task(self, task_data, node):
         """Recover a direct download task (single message)."""
-        from module.pyrogram_extension import report_bot_status
+        from hermes_telegram_downloader.module.pyrogram_extension import report_bot_status
         extra_data = task_data.get("extra_data", {})
         message_id = extra_data.get("message_id", 0)
         source_chat_id = extra_data.get("source_chat_id", 0)
@@ -434,7 +434,7 @@ class DownloadBot:
 
             if msg and msg.media:
                 # Check if file already exists in download history
-                from module.download_stat import get_download_result
+                from hermes_telegram_downloader.module.download_stat import get_download_result
                 _dlr = get_download_result()
                 _exists = False
                 if node.chat_id in _dlr:
@@ -521,7 +521,7 @@ class DownloadBot:
                 try:
                     if not node.has_protected_content:
                         await forward_normal_content(client, node, message)
-                        from module.pyrogram_extension import report_bot_status
+                        from hermes_telegram_downloader.module.pyrogram_extension import report_bot_status
                         await report_bot_status(client, node, immediate_reply=True)
                     else:
                         await self.add_download_task(message, node)
@@ -539,7 +539,7 @@ class DownloadBot:
 
                 # 创建临时 TaskNode 下载这条消息
                 try:
-                    from module.app import TaskNode
+                    from hermes_telegram_downloader.module.app import TaskNode
                     node = TaskNode(
                         chat_id=chat_id,
                         from_user_id=0,
@@ -1502,7 +1502,7 @@ async def download_forward_media(
                     f"trying link-based fetch"
                 )
                 try:
-                    from module.pyrogram_extension import parse_link
+                    from hermes_telegram_downloader.module.pyrogram_extension import parse_link
                     # Build source link: private channels use /c/, public use /username/
                     fwd_chat = message.forward_from_chat
                     if fwd_chat.username:
@@ -1996,7 +1996,7 @@ async def _consume_one_pending():
     import logging
     logger = logging.getLogger("bot.pending")
     try:
-        from module.task_store import get_pending_tasks, update_download_state, remove_task
+        from hermes_telegram_downloader.module.task_store import get_pending_tasks, update_download_state, remove_task
         add_download_task = _bot.add_download_task
         pending = get_pending_tasks()
         if not pending:
@@ -2048,7 +2048,7 @@ async def _consume_one_pending():
 
         # Check unified flood wait cooldown (shared with edit_message, download_media)
         if is_flood_wait_active():
-            from module.pyrogram_extension import get_flood_wait_remaining
+            from hermes_telegram_downloader.module.pyrogram_extension import get_flood_wait_remaining
             remaining = int(get_flood_wait_remaining())
             logger.debug(f"Pending consumer: unified FLOOD_WAIT cooldown, {remaining}s remaining")
             return
@@ -2075,7 +2075,7 @@ async def _consume_one_pending():
                     # 连续超时计数 — 超过3次标失败，不再无限循环
                     _pending_timeout_counts[task_id] = _pending_timeout_counts.get(task_id, 0) + 1
                     consecutive = _pending_timeout_counts[task_id]
-                    from module.pyrogram_extension import _unified_flood_wait
+                    from hermes_telegram_downloader.module.pyrogram_extension import _unified_flood_wait
                     if consecutive >= 3:
                         # 连续3次超时（共~15分钟），连接已死，标失败
                         logger.error(
@@ -2084,7 +2084,7 @@ async def _consume_one_pending():
                         )
                         _pending_timeout_counts.pop(task_id, None)
                         try:
-                            from module.download_stat import add_failed_download
+                            from hermes_telegram_downloader.module.download_stat import add_failed_download
                             add_failed_download(
                                 chat_id=cid, msg_id=msg_id,
                                 task_id=extra.get('task_id_display', str(task_id)),
@@ -2122,7 +2122,7 @@ async def _consume_one_pending():
                 except pyrogram.errors.exceptions.flood_420.FloodWait as e:
                     # Don't move to failed list — keep pending, set unified cooldown
                     wait_val = getattr(e, "value", 60)
-                    from module.pyrogram_extension import _unified_flood_wait
+                    from hermes_telegram_downloader.module.pyrogram_extension import _unified_flood_wait
                     _unified_flood_wait["until"] = time.time() + wait_val + 5
                     _unified_flood_wait["reason"] = f"FloodWait {wait_val}s on get_messages chat {cid} msg {msg_id}"
                     logger.warning(
@@ -2148,7 +2148,7 @@ async def _consume_one_pending():
                         _pending_timeout_counts[task_id] = _pending_timeout_counts.get(task_id, 0) + 1
                         consecutive = _pending_timeout_counts[task_id]
                         backoff = 60 * consecutive
-                        from module.pyrogram_extension import _unified_flood_wait
+                        from hermes_telegram_downloader.module.pyrogram_extension import _unified_flood_wait
                         _unified_flood_wait["until"] = time.time() + backoff + 5
                         _unified_flood_wait["reason"] = f"get_messages 连接超时疑似限速 chat {cid} msg {msg_id} (第{consecutive}次)"
                         logger.warning(
@@ -2160,7 +2160,7 @@ async def _consume_one_pending():
                             logger.error(f"Pending consumer: TimeoutError x{consecutive}, marking FAILED")
                             _pending_timeout_counts.pop(task_id, None)
                             try:
-                                from module.download_stat import add_failed_download
+                                from hermes_telegram_downloader.module.download_stat import add_failed_download
                                 add_failed_download(
                                     chat_id=cid, msg_id=msg_id,
                                     task_id=extra.get('task_id_display', str(task_id)),
@@ -2176,7 +2176,7 @@ async def _consume_one_pending():
                         return  # 保持 pending，不 remove_task
                     logger.warning(f"Pending consumer: get_messages failed for chat {cid} msg {msg_id}: {e}, moving to failed")
                     try:
-                        from module.download_stat import add_failed_download
+                        from hermes_telegram_downloader.module.download_stat import add_failed_download
                         task_id_display = extra.get("task_id_display", str(task_id))
                         add_failed_download(
                             chat_id=cid,
@@ -2195,7 +2195,7 @@ async def _consume_one_pending():
             if not msg or msg.empty:
                 logger.warning(f"Pending consumer: msg {msg_id} not found in chat {cid}, moving to failed")
                 try:
-                    from module.download_stat import add_failed_download
+                    from hermes_telegram_downloader.module.download_stat import add_failed_download
                     task_id_display = extra.get("task_id_display", str(task_id))
                     source_link = ""
                     if extra.get("source_chat_id") and extra.get("source_message_id"):
@@ -2222,7 +2222,7 @@ async def _consume_one_pending():
             _bot._consuming.discard(task_id)
         node = _bot.task_node.get(int(task_id)) if str(task_id).isdigit() else _bot.task_node.get(task_id)
         if not node:
-            from module.app import TaskNode
+            from hermes_telegram_downloader.module.app import TaskNode
             # Preserve original task_id_display and source info from extra_data
             # so recovered tasks keep their original display ID (e.g. 0626-784)
             # instead of generating a new one (0628-1241)
@@ -2248,7 +2248,7 @@ async def _consume_one_pending():
         # when the actual download starts.
         # Set total_size=1 (not 0) so web.py doesn't filter it out as a "placeholder"
         # entry. WebUI will show "获取文件信息中..." until real size arrives.
-        from module.download_stat import _download_result
+        from hermes_telegram_downloader.module.download_stat import _download_result
         if cid not in _download_result:
             _download_result[cid] = {}
         if int(msg_id) not in _download_result[cid]:
@@ -2312,7 +2312,7 @@ async def _pending_consumer_loop():
     while True:
         try:
             await asyncio.sleep(2)
-            from module.task_store import get_pending_tasks
+            from hermes_telegram_downloader.module.task_store import get_pending_tasks
             pending = get_pending_tasks()
             if pending:
                 await _consume_one_pending()

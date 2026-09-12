@@ -14,11 +14,11 @@ from typing import Callable, List, Optional, Union
 from loguru import logger
 from ruamel import yaml
 
-from module.cloud_drive import CloudDrive, CloudDriveConfig
-from module.filter import Filter
-from module.language import Language, set_language
-from utils.format import replace_date_time, validate_title
-from utils.meta_data import MetaData
+from hermes_telegram_downloader.module.cloud_drive import CloudDrive, CloudDriveConfig
+from hermes_telegram_downloader.module.filter import Filter
+from hermes_telegram_downloader.module.language import Language, set_language
+from hermes_telegram_downloader.utils.format import replace_date_time, validate_title
+from hermes_telegram_downloader.utils.meta_data import MetaData
 
 _yaml = yaml.YAML()
 # pylint: disable = R0902
@@ -187,7 +187,7 @@ class TaskNode:
         if task_id_display:
             self.task_id_display = task_id_display
         else:
-            from module.task_store import _get_next_seq, _lock
+            from hermes_telegram_downloader.module.task_store import _get_next_seq, _lock
             date_str = time.strftime('%m%d')
             with _lock:
                 seq = _get_next_seq(date_str)

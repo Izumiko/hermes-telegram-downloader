@@ -12,9 +12,9 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 from flask import Flask, Response, jsonify, render_template, request
 
-app = Flask(__name__, 
-    template_folder=os.path.join(os.path.dirname(__file__), 'module', 'templates'),
-    static_folder=os.path.join(os.path.dirname(__file__), 'module', 'static'),
+app = Flask(__name__,
+    template_folder=os.path.join(os.path.dirname(__file__), 'src', 'hermes_telegram_downloader', 'module', 'templates'),
+    static_folder=os.path.join(os.path.dirname(__file__), 'src', 'hermes_telegram_downloader', 'module', 'static'),
     static_url_path='/module/static')
 
 app.secret_key = "tdl-dev"

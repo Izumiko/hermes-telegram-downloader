@@ -11,14 +11,14 @@ from loguru import logger
 from pyrogram.types import Audio, Document, Photo, Video, VideoNote, Voice
 from rich.logging import RichHandler
 
-from module.app import Application, ChatDownloadConfig, DownloadStatus, TaskNode
-from module.bot import start_download_bot, stop_download_bot
-from module.download_stat import load_downloads, save_downloads, set_chat_title, update_download_status
-from module.download_stat import add_failed_download as _add_failed_download
-from module.task_store import update_task_progress, update_download_state
-from module.get_chat_history_v2 import get_chat_history_v2
-from module.language import _t
-from module.pyrogram_extension import (
+from hermes_telegram_downloader.module.app import Application, ChatDownloadConfig, DownloadStatus, TaskNode
+from hermes_telegram_downloader.module.bot import start_download_bot, stop_download_bot
+from hermes_telegram_downloader.module.download_stat import load_downloads, save_downloads, set_chat_title, update_download_status
+from hermes_telegram_downloader.module.download_stat import add_failed_download as _add_failed_download
+from hermes_telegram_downloader.module.task_store import update_task_progress, update_download_state
+from hermes_telegram_downloader.module.get_chat_history_v2 import get_chat_history_v2
+from hermes_telegram_downloader.module.language import _t
+from hermes_telegram_downloader.module.pyrogram_extension import (
     HookClient,
     fetch_message,
     get_extension,
@@ -29,11 +29,11 @@ from module.pyrogram_extension import (
     update_cloud_upload_stat,
     upload_telegram_chat,
 )
-from module.web import init_web
-from utils.format import truncate_filename, validate_title
-from utils.log import LogFilter
-from utils.meta import print_meta
-from utils.meta_data import MetaData
+from hermes_telegram_downloader.module.web import init_web
+from hermes_telegram_downloader.utils.format import truncate_filename, validate_title
+from hermes_telegram_downloader.utils.log import LogFilter
+from hermes_telegram_downloader.utils.meta import print_meta
+from hermes_telegram_downloader.utils.meta_data import MetaData
 
 logging.basicConfig(
     level=logging.INFO,
@@ -263,8 +263,8 @@ async def _get_media_meta(
 def _move_task_to_failed(node, message, error_message):
     """移任务到失败列表 + 清理 placeholder + 从 bot_tasks.json 删除。"""
     try:
-        from module.download_stat import add_failed_download, delete_download_result_entry as _ddre
-        from module.task_store import complete_task as _ct
+        from hermes_telegram_downloader.module.download_stat import add_failed_download, delete_download_result_entry as _ddre
+        from hermes_telegram_downloader.module.task_store import complete_task as _ct
         if node and node.task_id:
             msg_id = message.id if message else 0
             source_link = ""
@@ -291,8 +291,8 @@ def _move_task_to_failed(node, message, error_message):
 
 async def _reset_task_for_retry(node, message):
     """重置 node 状态，准备重新入队下载。"""
-    from module.pyrogram_extension import remove_download_cache
-    from module.download_stat import delete_download_result_entry as _ddre
+    from hermes_telegram_downloader.module.pyrogram_extension import remove_download_cache
+    from hermes_telegram_downloader.module.download_stat import delete_download_result_entry as _ddre
     import time as _time
     # 清理 download_cache，防止 record_download_status 装饰器短路返回 Downloading
     # Cache 对象没有 .pop()，用 remove_download_cache 操作 .store 内部 dict
@@ -352,7 +352,7 @@ async def download_task(client: pyrogram.Client, message: pyrogram.types.Message
     )
     # Backfill source_chat_title from cache (populated during download_media)
     if not node.source_chat_title and getattr(node, 'source_chat_id', 0):
-        from module.download_stat import get_chat_title as _gct
+        from hermes_telegram_downloader.module.download_stat import get_chat_title as _gct
         cached = _gct(node.source_chat_id)
         if cached:
             node.source_chat_title = cached
@@ -398,11 +398,11 @@ async def download_task(client: pyrogram.Client, message: pyrogram.types.Message
             from_user_id=getattr(node, "from_user_id", "") or "",
         )
         # Remove from active download list so it doesn't stay in WebUI forever
-        from module.download_stat import delete_download_result_entry as _ddre
+        from hermes_telegram_downloader.module.download_stat import delete_download_result_entry as _ddre
         _ddre(node.chat_id, message.id if message else message_id)
     elif download_status is DownloadStatus.SkipDownload:
         # Remove placeholder from active download list
-        from module.download_stat import delete_download_result_entry as _ddre
+        from hermes_telegram_downloader.module.download_stat import delete_download_result_entry as _ddre
         _ddre(node.chat_id, message.id if message else message_id)
     await upload_telegram_chat(
         client, node.upload_user if node.upload_user else client,
@@ -417,13 +417,13 @@ async def download_task(client: pyrogram.Client, message: pyrogram.types.Message
     await report_bot_download_status(node.bot, node, download_status, file_size)
     # Send final status with full stats immediately for single downloads
     if node.bot and node.is_finish() and not node.is_stop_transmission:
-        from module.pyrogram_extension import report_bot_status
+        from hermes_telegram_downloader.module.pyrogram_extension import report_bot_status
         try:
             await report_bot_status(node.bot, node, immediate_reply=True)
         except Exception as e:
             logger.warning(f"Failed to send final bot status for task {node.task_id}: {e}")
         try:
-            from module.task_store import complete_task as _ct
+            from hermes_telegram_downloader.module.task_store import complete_task as _ct
             _ct(node.task_id)
         except Exception as e:
             logger.warning(f"Failed to complete task {node.task_id}: {e}")
@@ -593,7 +593,7 @@ async def download_media(
                 error_message = f"频率限制总超时，累计等待{total_wait}秒"
                 break
             # Set unified cooldown so edit_message and pending consumer pause too
-            from module.pyrogram_extension import _unified_flood_wait
+            from hermes_telegram_downloader.module.pyrogram_extension import _unified_flood_wait
             _unified_flood_wait["until"] = time.time() + wait_err.value + 5
             _unified_flood_wait["reason"] = f"download_media FloodWait {wait_err.value}s (msg {message.id})"
             # First FloodWait for this file: notify user so they know progress is paused
@@ -642,7 +642,7 @@ async def download_media(
             _cleanup_temp_file(temp_file_name)
             # 递增退避：第1次60s，第2次120s，第3次300s
             backoff = [60, 120, 300][min(retry, 2)]
-            from module.pyrogram_extension import _unified_flood_wait
+            from hermes_telegram_downloader.module.pyrogram_extension import _unified_flood_wait
             _unified_flood_wait["until"] = time.time() + backoff + 5
             _unified_flood_wait["reason"] = f"连接超时疑似限速 (msg {message.id})"
             _client_conn_errors["count"] += 1
@@ -798,7 +798,7 @@ async def worker(client: pyrogram.client.Client):
     Pyrogram 进度回调，说明连接已死（不是慢），cancel 该任务释放 worker。
     慢下载（有进度回调）不受影响。
     """
-    from module.download_stat import (
+    from hermes_telegram_downloader.module.download_stat import (
         _TASK_HEARTBEAT_TIMEOUT, get_task_heartbeat_age, clear_task_heartbeat,
     )
     while app.is_running:
@@ -813,7 +813,7 @@ async def worker(client: pyrogram.client.Client):
             _requeued = False  # 标记是否重新入队（重新入队时不 decrement，因为新 worker 会 +1）
             # Mark task as actively downloading (no longer pending/in-queue)
             if node.task_id:
-                from module.bot import _bot
+                from hermes_telegram_downloader.module.bot import _bot
                 _bot._in_queue.discard(node.task_id)
                 update_download_state(node.task_id, "downloading")
             if node.is_stop_transmission:
@@ -987,7 +987,7 @@ async def download_chat_task(client: pyrogram.Client, chat_download_config: Chat
 
 async def download_all_chat(client: pyrogram.Client):
     """Download All chat"""
-    from module.task_store import save_task as _save_task
+    from hermes_telegram_downloader.module.task_store import save_task as _save_task
     for key, value in app.chat_download_config.items():
         value.node = TaskNode(chat_id=key)
         _save_task(
@@ -1007,7 +1007,7 @@ async def download_all_chat(client: pyrogram.Client):
             logger.warning(f"Download {key} error: {e}")
         finally:
                     value.need_check = True
-                    from module.task_store import complete_task
+                    from hermes_telegram_downloader.module.task_store import complete_task
                     complete_task(value.node.task_id)
 
 

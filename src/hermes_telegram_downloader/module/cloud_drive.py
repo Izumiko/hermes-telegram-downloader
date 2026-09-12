@@ -12,7 +12,7 @@ from zipfile import ZipFile
 
 from loguru import logger
 
-from utils import platform
+from hermes_telegram_downloader.utils import platform
 
 
 # pylint: disable = R0902

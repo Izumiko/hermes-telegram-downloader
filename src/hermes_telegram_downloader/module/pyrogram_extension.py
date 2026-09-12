@@ -28,7 +28,7 @@ from pyrogram.file_id import (
 )
 from pyrogram.mime_types import mime_types
 
-from module.app import (
+from hermes_telegram_downloader.module.app import (
     Application,
     CloudDriveUploadStat,
     DownloadStatus,
@@ -37,16 +37,16 @@ from module.app import (
     UploadProgressStat,
     UploadStatus,
 )
-from module.download_stat import get_download_result
-from module.language import Language, _t
-from module.send_media_group_v2 import cache_media, send_media_group_v2
-from utils.format import (
+from hermes_telegram_downloader.module.download_stat import get_download_result
+from hermes_telegram_downloader.module.language import Language, _t
+from hermes_telegram_downloader.module.send_media_group_v2 import cache_media, send_media_group_v2
+from hermes_telegram_downloader.utils.format import (
     create_progress_bar,
     extract_info_from_link,
     format_byte,
     truncate_filename,
 )
-from utils.meta_data import MetaData
+from hermes_telegram_downloader.utils.meta_data import MetaData
 
 _mimetypes = MimeTypes()
 _mimetypes.readfp(StringIO(mime_types))
@@ -1192,7 +1192,7 @@ async def _report_bot_status(
         # Build failed files list with error reasons (from _failed_downloads)
         if node.failed_download_task > 0:
             try:
-                from module.download_stat import get_failed_downloads
+                from hermes_telegram_downloader.module.download_stat import get_failed_downloads
                 for f in get_failed_downloads():
                     f_task_id = str(f.get("task_id", ""))
                     if f_task_id == str(node.task_id) or f_task_id == str(node.task_id_display):

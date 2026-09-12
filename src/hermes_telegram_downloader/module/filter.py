@@ -6,8 +6,8 @@ from typing import Any, Optional, Tuple
 
 from ply import lex, yacc
 
-from utils.format import get_byte_from_str
-from utils.meta_data import MetaData, NoneObj, ReString
+from hermes_telegram_downloader.utils.format import get_byte_from_str
+from hermes_telegram_downloader.utils.meta_data import MetaData, NoneObj, ReString
 
 
 # pylint: disable = R0904

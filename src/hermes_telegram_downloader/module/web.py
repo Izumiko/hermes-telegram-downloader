@@ -7,10 +7,10 @@ import threading
 
 from flask import Flask, jsonify, render_template, request
 
-import utils
-from module.app import Application
-from module.task_store import get_pending_tasks, remove_task
-from module.download_stat import (
+from hermes_telegram_downloader import utils
+from hermes_telegram_downloader.module.app import Application
+from hermes_telegram_downloader.module.task_store import get_pending_tasks, remove_task
+from hermes_telegram_downloader.module.download_stat import (
     DownloadState,
     batch_delete_failed,
     batch_delete_tasks,
@@ -26,7 +26,7 @@ from module.download_stat import (
     resume_task,
     set_download_state,
 )
-from utils.format import format_byte
+from hermes_telegram_downloader.utils.format import format_byte
 import asyncio
 
 log = logging.getLogger("werkzeug")
@@ -76,7 +76,7 @@ def init_web(app: Application):
     global _app
     _app = app
     # Load download history into memory so WebUI shows completed tasks
-    from module.download_stat import load_downloads
+    from hermes_telegram_downloader.module.download_stat import load_downloads
     load_downloads()
     logger = logging.getLogger("web.init")
     logger.info("download_history loaded into memory")
@@ -118,8 +118,8 @@ def get_download_speed():
 @_flask_app.route("/get_flood_wait")
 def get_flood_wait():
     """Get unified FloodWait cooldown status for WebUI display."""
-    from module.pyrogram_extension import is_flood_wait_active, get_flood_wait_remaining, _unified_flood_wait
-    from module.download_stat import _throttle_state
+    from hermes_telegram_downloader.module.pyrogram_extension import is_flood_wait_active, get_flood_wait_remaining, _unified_flood_wait
+    from hermes_telegram_downloader.module.download_stat import _throttle_state
     import time as _now
     now = _now.time()
     # throttle active 直接看 notified — 只要没解除限速就一直显示
@@ -183,9 +183,9 @@ def set_max_workers():
     # max_concurrent_transmissions follows max_download_task * 5
     _app.max_concurrent_transmissions = n * 5
     # Apply to pyrogram client if available
-    from module.pyrogram_extension import set_max_concurrent_transmissions
+    from hermes_telegram_downloader.module.pyrogram_extension import set_max_concurrent_transmissions
     try:
-        from module.bot import _bot
+        from hermes_telegram_downloader.module.bot import _bot
         if _bot and _bot.client:
             set_max_concurrent_transmissions(_bot.client, n * 5)
     except Exception:
@@ -198,7 +198,7 @@ def set_max_workers():
 @_flask_app.route("/get_download_list")
 def get_download_list():
     """Get download list with task_id and status"""
-    from module.download_stat import get_download_result
+    from hermes_telegram_downloader.module.download_stat import get_download_result
     # Removed: load_downloads() on empty result — it overwrites runtime data
     # with stale disk data when all downloads happen to be between states.
     # load_downloads() is already called at startup; trust the in-memory state.
@@ -427,7 +427,7 @@ def web_check_file_exists():
 @_flask_app.route("/delete_task", methods=["POST"])
 def web_delete_task():
     """Delete a specific download task. If delete_file=true, also remove the local file."""
-    from module.pyrogram_extension import remove_download_cache
+    from hermes_telegram_downloader.module.pyrogram_extension import remove_download_cache
     task_id = request.args.get("task_id")
     if not task_id:
         return jsonify({"code": "0", "message": "task_id required"})
@@ -600,7 +600,7 @@ def web_batch_retry():
         remove_failed_download(task_id)
 
         # Immediately insert a placeholder into bot_tasks.json so WebUI sees it
-        from module.task_store import save_task as _save_placeholder
+        from hermes_telegram_downloader.module.task_store import save_task as _save_placeholder
         _save_placeholder(
             task_id=f"retry_{task_id}",
             chat_id=int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id,
@@ -642,7 +642,7 @@ def web_get_pending_list():
     pending = get_pending_tasks()
     # Filter out tasks already in _download_result (consumer created placeholder).
     # These will show up in the active download list — no need to duplicate in pending.
-    from module.download_stat import get_download_result as _get_dr
+    from hermes_telegram_downloader.module.download_stat import get_download_result as _get_dr
     _dr = _get_dr()
 
     result = []
@@ -752,7 +752,7 @@ async def _async_retry_download(chat_id, msg_id, from_user_id="", placeholder_ta
     def _restore_failed(reason):
         """Re-add to failed list if retry can't even start downloading."""
         try:
-            from module.download_stat import add_failed_download
+            from hermes_telegram_downloader.module.download_stat import add_failed_download
             add_failed_download(
                 chat_id=chat_id,
                 msg_id=msg_id,
@@ -768,7 +768,7 @@ async def _async_retry_download(chat_id, msg_id, from_user_id="", placeholder_ta
         # 清理 placeholder 和 task node，避免残留在 bot_tasks.json
         try:
             if placeholder_task_id:
-                from module.task_store import remove_task
+                from hermes_telegram_downloader.module.task_store import remove_task
                 remove_task(placeholder_task_id)
         except Exception:
             pass
@@ -779,7 +779,7 @@ async def _async_retry_download(chat_id, msg_id, from_user_id="", placeholder_ta
         except (ValueError, TypeError):
             cid = chat_id
 
-        from module.bot import _bot
+        from hermes_telegram_downloader.module.bot import _bot
 
         client = _bot.client
         if not client:
@@ -794,7 +794,7 @@ async def _async_retry_download(chat_id, msg_id, from_user_id="", placeholder_ta
         # for forwarded messages with stale file references.
         if source_link:
             try:
-                from module.pyrogram_extension import parse_link
+                from hermes_telegram_downloader.module.pyrogram_extension import parse_link
                 link_chat_id, link_msg_id, _ = await parse_link(client, source_link)
                 if link_chat_id and link_msg_id:
                     link_msg = await client.get_messages(link_chat_id, link_msg_id)
@@ -824,7 +824,7 @@ async def _async_retry_download(chat_id, msg_id, from_user_id="", placeholder_ta
             _restore_failed("重试失败: 消息不存在或已删除")
             return
 
-        from module.app import TaskNode, TaskType
+        from hermes_telegram_downloader.module.app import TaskNode, TaskType
 
         node = TaskNode(
             chat_id=cid,
@@ -838,7 +838,7 @@ async def _async_retry_download(chat_id, msg_id, from_user_id="", placeholder_ta
         _bot.add_task_node(node)
 
         # Persist to bot_tasks.json so the task survives container restarts
-        from module.task_store import save_task as _save_task
+        from hermes_telegram_downloader.module.task_store import save_task as _save_task
         saved_ok = _save_task(
             task_id=node.task_id,
             chat_id=cid,
@@ -858,7 +858,7 @@ async def _async_retry_download(chat_id, msg_id, from_user_id="", placeholder_ta
         # Clean up the placeholder entry created by batch_retry
         if placeholder_task_id:
             try:
-                from module.task_store import remove_task as _remove_placeholder
+                from hermes_telegram_downloader.module.task_store import remove_task as _remove_placeholder
                 _remove_placeholder(placeholder_task_id)
             except Exception:
                 pass

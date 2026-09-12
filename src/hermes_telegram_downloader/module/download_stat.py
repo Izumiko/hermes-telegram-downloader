@@ -8,8 +8,8 @@ from enum import Enum
 from loguru import logger
 from pyrogram import Client
 
-from module.app import TaskNode
-from utils.format import format_byte
+from hermes_telegram_downloader.module.app import TaskNode
+from hermes_telegram_downloader.utils.format import format_byte
 
 
 class DownloadState(Enum):
@@ -475,13 +475,13 @@ async def update_download_status(
     # 占位符→真实数据转换时强制刷新 bot 消息（避免卡在"获取文件信息中..."）
     if _placeholder_resolved and node.bot:
         node.last_progress_pct = -1  # 重置进度桶，让 0~20% 也能触发更新
-        from module.pyrogram_extension import report_bot_status
+        from hermes_telegram_downloader.module.pyrogram_extension import report_bot_status
         await report_bot_status(node.bot, node, immediate_reply=True)
 
     # Send initial progress report when download first starts
     if node.bot and not node.initial_progress_reported and down_byte > 0:
         node.initial_progress_reported = True
-        from module.pyrogram_extension import report_bot_status
+        from hermes_telegram_downloader.module.pyrogram_extension import report_bot_status
         await report_bot_status(node.bot, node)
 
     # Report progress at every 20% milestone during active download
