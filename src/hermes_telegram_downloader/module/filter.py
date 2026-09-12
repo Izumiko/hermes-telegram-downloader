@@ -360,9 +360,9 @@ class Filter:
             return False
         raise ValueError("meta data cannot be empty!")
 
-    def check_filter(self, filter_str: str) -> Tuple[bool, Optional[str]]:
+    def check_filter(self, filter_str: str) -> tuple[bool, str | None]:
         """check filter str"""
         try:
-            return not self.exec(filter_str) is None, None
+            return self.exec(filter_str) is not None, None
         except Exception as e:
             return False, str(e)

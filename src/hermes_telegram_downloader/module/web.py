@@ -1,5 +1,6 @@
 """web ui for media download"""
 
+import asyncio
 import datetime
 import logging
 import os
@@ -9,7 +10,6 @@ from flask import Flask, jsonify, render_template, request
 
 from hermes_telegram_downloader import utils
 from hermes_telegram_downloader.module.app import Application
-from hermes_telegram_downloader.module.task_store import get_pending_tasks, remove_task
 from hermes_telegram_downloader.module.download_stat import (
     DownloadState,
     batch_delete_failed,
@@ -26,13 +26,13 @@ from hermes_telegram_downloader.module.download_stat import (
     resume_task,
     set_download_state,
 )
+from hermes_telegram_downloader.module.task_store import get_pending_tasks, remove_task
 from hermes_telegram_downloader.utils.format import format_byte
-import asyncio
 
 log = logging.getLogger("werkzeug")
 log.setLevel(logging.ERROR)
 
-_flask_app = Flask(__name__, static_folder='static', static_url_path='/static')
+_flask_app = Flask(__name__, static_folder="static", static_url_path="/static")
 _flask_app.secret_key = "tdl"
 # Always reload templates from disk on each request — needed for NAS deployments
 # where index.html is updated by the deploy script without restarting the container.
@@ -77,6 +77,7 @@ def init_web(app: Application):
     _app = app
     # Load download history into memory so WebUI shows completed tasks
     from hermes_telegram_downloader.module.download_stat import load_downloads
+
     load_downloads()
     logger = logging.getLogger("web.init")
     logger.info("download_history loaded into memory")
@@ -111,21 +112,29 @@ def get_download_speed():
     """Get download speed"""
     return jsonify(
         download_speed=format_byte(get_total_download_speed()) + "/s",
-        upload_speed="0.00 B/s"
+        upload_speed="0.00 B/s",
     )
 
 
 @_flask_app.route("/get_flood_wait")
 def get_flood_wait():
     """Get unified FloodWait cooldown status for WebUI display."""
-    from hermes_telegram_downloader.module.pyrogram_extension import is_flood_wait_active, get_flood_wait_remaining, _unified_flood_wait
-    from hermes_telegram_downloader.module.download_stat import _throttle_state
     import time as _now
+
+    from hermes_telegram_downloader.module.download_stat import _throttle_state
+    from hermes_telegram_downloader.module.pyrogram_extension import (
+        _unified_flood_wait,
+        get_flood_wait_remaining,
+        is_flood_wait_active,
+    )
+
     now = _now.time()
     # throttle active 直接看 notified — 只要没解除限速就一直显示
     # docker 重启后 _throttle_state 重置为默认值，自动清除
     throttle_active = _throttle_state["notified"]
-    throttle_elapsed = int(now - _throttle_state["since"]) if _throttle_state["since"] > 0 else 0
+    throttle_elapsed = (
+        int(now - _throttle_state["since"]) if _throttle_state["since"] > 0 else 0
+    )
     return jsonify(
         active=is_flood_wait_active(),
         remaining=int(get_flood_wait_remaining()),
@@ -133,7 +142,7 @@ def get_flood_wait():
         throttle={
             "active": throttle_active,
             "elapsed": throttle_elapsed,
-        }
+        },
     )
 
 
@@ -183,9 +192,13 @@ def set_max_workers():
     # max_concurrent_transmissions follows max_download_task * 5
     _app.max_concurrent_transmissions = n * 5
     # Apply to pyrogram client if available
-    from hermes_telegram_downloader.module.pyrogram_extension import set_max_concurrent_transmissions
+    from hermes_telegram_downloader.module.pyrogram_extension import (
+        set_max_concurrent_transmissions,
+    )
+
     try:
         from hermes_telegram_downloader.module.bot import _bot
+
         if _bot and _bot.client:
             set_max_concurrent_transmissions(_bot.client, n * 5)
     except Exception:
@@ -199,6 +212,7 @@ def set_max_workers():
 def get_download_list():
     """Get download list with task_id and status"""
     from hermes_telegram_downloader.module.download_stat import get_download_result
+
     # Removed: load_downloads() on empty result — it overwrites runtime data
     # with stale disk data when all downloads happen to be between states.
     # load_downloads() is already called at startup; trust the in-memory state.
@@ -217,7 +231,9 @@ def get_download_list():
     result = []
     for chat_id, messages in download_result.items():
         for idx, value in messages.items():
-            is_already_down = value["down_byte"] == value["total_size"] and value["total_size"] > 0
+            is_already_down = (
+                value["down_byte"] == value["total_size"] and value["total_size"] > 0
+            )
 
             if already_down and not is_already_down:
                 continue
@@ -234,6 +250,7 @@ def get_download_list():
 
             # Staleness check: if speed hasn't been updated in 3s (no Pyrogram callback), show 0
             import time as _now
+
             raw_speed = value["download_speed"]
             if raw_speed > 0 and not is_already_down:
                 last_update = value.get("end_time", 0)
@@ -270,7 +287,11 @@ def get_download_list():
             # Phase: 区分 placeholder（消息数据获取中）和真正在下载
             # total_size<=1 且 down_byte==0 = consumer 刚创建的占位条目
             # Pyrogram 第一次回调就会覆盖为真实 total_size
-            if status == "active" and value.get("total_size", 0) <= 1 and value.get("down_byte", 0) == 0:
+            if (
+                status == "active"
+                and value.get("total_size", 0) <= 1
+                and value.get("down_byte", 0) == 0
+            ):
                 phase = "fetching"
             else:
                 phase = "downloading"
@@ -287,11 +308,15 @@ def get_download_list():
             completed_time = ""
             created_at = ""
             if start_time:
-                created_at = datetime.datetime.fromtimestamp(start_time).strftime("%m-%d %H:%M:%S")
+                created_at = datetime.datetime.fromtimestamp(start_time).strftime(
+                    "%m-%d %H:%M:%S"
+                )
             if is_already_down:
                 ts = end_time if end_time else start_time
                 if ts:
-                    completed_time = datetime.datetime.fromtimestamp(ts).strftime("%m-%d %H:%M:%S")
+                    completed_time = datetime.datetime.fromtimestamp(ts).strftime(
+                        "%m-%d %H:%M:%S"
+                    )
 
             # Server-side search filter (by task_id or filename)
             if search:
@@ -300,31 +325,39 @@ def get_download_list():
                 if search not in searchable:
                     continue
 
-            result.append({
-                "task_id": str(task_id),
-                "chat": str(chat_id),
-                "chat_title": chat_title,
-                "id": str(idx),
-                "filename": os.path.basename(value["file_name"]) if value.get("file_name") else f"msg_{idx} (等待下载)",
-                "total_size": format_byte(value["total_size"]) if value["total_size"] > 0 else "未知",
-                "total_size_bytes": value["total_size"],
-                "download_progress": str(progress),
-                "download_progress_raw": progress,
-                "download_speed": download_speed,
-                "eta": eta,
-                "save_path": value["file_name"].replace("\\", "/"),
-                "status": status,
-                "phase": phase,
-                "start_time": start_time,
-                "end_time": end_time,
-                "created_at": created_at,
-                "completed_time": completed_time,
-                "task_id_display": value.get("task_id_display", "") or task_id,
-            })
+            result.append(
+                {
+                    "task_id": str(task_id),
+                    "chat": str(chat_id),
+                    "chat_title": chat_title,
+                    "id": str(idx),
+                    "filename": os.path.basename(value["file_name"])
+                    if value.get("file_name")
+                    else f"msg_{idx} (等待下载)",
+                    "total_size": format_byte(value["total_size"])
+                    if value["total_size"] > 0
+                    else "未知",
+                    "total_size_bytes": value["total_size"],
+                    "download_progress": str(progress),
+                    "download_progress_raw": progress,
+                    "download_speed": download_speed,
+                    "eta": eta,
+                    "save_path": value["file_name"].replace("\\", "/"),
+                    "status": status,
+                    "phase": phase,
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "created_at": created_at,
+                    "completed_time": completed_time,
+                    "task_id_display": value.get("task_id_display", "") or task_id,
+                }
+            )
 
     # Sort by time: active by start_time (newest first), completed by end_time (newest first)
     if already_down:
-        result.sort(key=lambda x: x.get("end_time", 0) or x.get("start_time", 0), reverse=True)
+        result.sort(
+            key=lambda x: x.get("end_time", 0) or x.get("start_time", 0), reverse=True
+        )
     else:
         result.sort(key=lambda x: x.get("start_time", 0), reverse=True)
 
@@ -332,14 +365,20 @@ def get_download_list():
 
     # Apply pagination slice (for completed downloads with limit > 0)
     if already_down and limit > 0:
-        result = result[offset:offset + limit]
+        result = result[offset : offset + limit]
 
-    return jsonify(result) if not already_down else jsonify({
-        "tasks": result,
-        "total": total,
-        "offset": offset,
-        "limit": limit,
-    })
+    return (
+        jsonify(result)
+        if not already_down
+        else jsonify(
+            {
+                "tasks": result,
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+            }
+        )
+    )
 
 
 @_flask_app.route("/get_failed_downloads")
@@ -356,18 +395,20 @@ def web_get_failed_downloads():
         ts = f.get("timestamp", 0)
         if ts:
             failed_time = datetime.datetime.fromtimestamp(ts).strftime("%m-%d %H:%M:%S")
-        result.append({
-            "task_id": str(f["task_id"]),
-            "chat": str(chat_id),
-            "chat_title": chat_title,
-            "id": str(f.get("msg_id", "")),
-            "filename": os.path.basename(f.get("file_name", "")),
-            "error_message": f.get("error_message", "Unknown error"),
-            "total_size": format_byte(f.get("total_size", 0)),
-            "failed_time": failed_time,
-            "source_link": f.get("source_link", ""),
-            "from_user_id": f.get("from_user_id", "") or "",
-        })
+        result.append(
+            {
+                "task_id": str(f["task_id"]),
+                "chat": str(chat_id),
+                "chat_title": chat_title,
+                "id": str(f.get("msg_id", "")),
+                "filename": os.path.basename(f.get("file_name", "")),
+                "error_message": f.get("error_message", "Unknown error"),
+                "total_size": format_byte(f.get("total_size", 0)),
+                "failed_time": failed_time,
+                "source_link": f.get("source_link", ""),
+                "from_user_id": f.get("from_user_id", "") or "",
+            }
+        )
     return jsonify(result)
 
 
@@ -406,7 +447,9 @@ def web_check_file_exists():
     for chat_id, messages in download_result.items():
         for msg_id, value in messages.items():
             composite_key = f"{chat_id}_{msg_id}"
-            if composite_key == str(task_id) or str(value.get("task_id", "")) == str(task_id):
+            if composite_key == str(task_id) or str(value.get("task_id", "")) == str(
+                task_id
+            ):
                 file_path = value.get("file_name", "")
                 break
         if file_path:
@@ -416,18 +459,23 @@ def web_check_file_exists():
         return jsonify({"code": "1", "exists": False, "path": "", "filename": ""})
 
     exists = os.path.isfile(file_path)
-    return jsonify({
-        "code": "1",
-        "exists": exists,
-        "path": file_path.replace("\\", "/"),
-        "filename": os.path.basename(file_path),
-    })
+    return jsonify(
+        {
+            "code": "1",
+            "exists": exists,
+            "path": file_path.replace("\\", "/"),
+            "filename": os.path.basename(file_path),
+        }
+    )
 
 
 @_flask_app.route("/delete_task", methods=["POST"])
 def web_delete_task():
     """Delete a specific download task. If delete_file=true, also remove the local file."""
-    from hermes_telegram_downloader.module.pyrogram_extension import remove_download_cache
+    from hermes_telegram_downloader.module.pyrogram_extension import (
+        remove_download_cache,
+    )
+
     task_id = request.args.get("task_id")
     if not task_id:
         return jsonify({"code": "0", "message": "task_id required"})
@@ -439,7 +487,9 @@ def web_delete_task():
     for chat_id, messages in download_result.items():
         for msg_id, value in messages.items():
             composite_key = f"{chat_id}_{msg_id}"
-            if composite_key == str(task_id) or str(value.get("task_id", "")) == str(task_id):
+            if composite_key == str(task_id) or str(value.get("task_id", "")) == str(
+                task_id
+            ):
                 file_path = value.get("file_name", "")
                 remove_download_cache(chat_id, msg_id)
 
@@ -461,12 +511,14 @@ def web_delete_task():
     if not success:
         success = remove_failed_download(task_id)
     if success:
-        return jsonify({
-            "code": "1",
-            "message": "deleted",
-            "file_deleted": file_deleted,
-            "file_error": file_error,
-        })
+        return jsonify(
+            {
+                "code": "1",
+                "message": "deleted",
+                "file_deleted": file_deleted,
+                "file_error": file_error,
+            }
+        )
     return jsonify({"code": "0", "message": "task not found"})
 
 
@@ -493,7 +545,9 @@ def web_batch_delete():
             for chat_id, messages in download_result.items():
                 for msg_id, value in messages.items():
                     composite_key = f"{chat_id}_{msg_id}"
-                    if composite_key == str(tid) or str(value.get("task_id", "")) == str(tid):
+                    if composite_key == str(tid) or str(
+                        value.get("task_id", "")
+                    ) == str(tid):
                         file_path = value.get("file_name", "")
                         break
                 if file_path:
@@ -512,13 +566,15 @@ def web_batch_delete():
     deleted_failed = batch_delete_failed(task_ids)
     total = deleted_active + deleted_failed
 
-    return jsonify({
-        "code": "1",
-        "message": f"deleted {total} tasks",
-        "deleted": total,
-        "files_deleted": files_deleted,
-        "files_not_found": files_not_found,
-    })
+    return jsonify(
+        {
+            "code": "1",
+            "message": f"deleted {total} tasks",
+            "deleted": total,
+            "files_deleted": files_deleted,
+            "files_not_found": files_not_found,
+        }
+    )
 
 
 @_flask_app.route("/retry_task", methods=["POST"])
@@ -544,7 +600,9 @@ def web_retry_task():
     from_user_id = target.get("from_user_id", "") or ""
     source_link = target.get("source_link", "") or ""
     if not chat_id or not msg_id:
-        return jsonify({"code": "0", "message": "incomplete task data (missing chat_id/msg_id)"})
+        return jsonify(
+            {"code": "0", "message": "incomplete task data (missing chat_id/msg_id)"}
+        )
 
     # Remove from failed list first
     remove_failed_download(task_id)
@@ -553,7 +611,13 @@ def web_retry_task():
     try:
         if _app and _app.loop:
             asyncio.run_coroutine_threadsafe(
-                _async_retry_download(chat_id, msg_id, from_user_id, source_link=source_link, original_task_id=task_id),
+                _async_retry_download(
+                    chat_id,
+                    msg_id,
+                    from_user_id,
+                    source_link=source_link,
+                    original_task_id=task_id,
+                ),
                 _app.loop,
             )
             return jsonify({"code": "1", "message": "已加入重试队列"})
@@ -600,7 +664,10 @@ def web_batch_retry():
         remove_failed_download(task_id)
 
         # Immediately insert a placeholder into bot_tasks.json so WebUI sees it
-        from hermes_telegram_downloader.module.task_store import save_task as _save_placeholder
+        from hermes_telegram_downloader.module.task_store import (
+            save_task as _save_placeholder,
+        )
+
         _save_placeholder(
             task_id=f"retry_{task_id}",
             chat_id=int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id,
@@ -609,16 +676,28 @@ def web_batch_retry():
             end_offset_id=0,
             limit=1,
             download_filter=None,
-            from_user_id=from_user_id or (int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id),
+            from_user_id=from_user_id
+            or (int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id),
             task_type="retry",
-            extra_data={"source_task_id": task_id, "message_id": msg_id, "pending": True},
+            extra_data={
+                "source_task_id": task_id,
+                "message_id": msg_id,
+                "pending": True,
+            },
         )
 
         # Submit async retry
         try:
             if _app and _app.loop:
                 asyncio.run_coroutine_threadsafe(
-                    _async_retry_download(chat_id, msg_id, from_user_id, placeholder_task_id=f"retry_{task_id}", source_link=source_link, original_task_id=task_id),
+                    _async_retry_download(
+                        chat_id,
+                        msg_id,
+                        from_user_id,
+                        placeholder_task_id=f"retry_{task_id}",
+                        source_link=source_link,
+                        original_task_id=task_id,
+                    ),
                     _app.loop,
                 )
                 queued += 1
@@ -627,22 +706,29 @@ def web_batch_retry():
         except Exception as e:
             errors.append(f"{task_id}: {str(e)}")
 
-    return jsonify({
-        "code": "1",
-        "message": f"已加入重试队列 {queued} 个任务" + (f"，{len(errors)} 个失败" if errors else ""),
-        "queued": queued,
-        "errors": errors,
-    })
+    return jsonify(
+        {
+            "code": "1",
+            "message": f"已加入重试队列 {queued} 个任务"
+            + (f"，{len(errors)} 个失败" if errors else ""),
+            "queued": queued,
+            "errors": errors,
+        }
+    )
 
 
 @_flask_app.route("/get_pending_list")
 def web_get_pending_list():
     """Get list of pending tasks (received but not started downloading)"""
     import time as _time
+
     pending = get_pending_tasks()
     # Filter out tasks already in _download_result (consumer created placeholder).
     # These will show up in the active download list — no need to duplicate in pending.
-    from hermes_telegram_downloader.module.download_stat import get_download_result as _get_dr
+    from hermes_telegram_downloader.module.download_stat import (
+        get_download_result as _get_dr,
+    )
+
     _dr = _get_dr()
 
     result = []
@@ -657,7 +743,7 @@ def web_get_pending_list():
                 _mid_int = int(_mid)
                 if _cid_int in _dr and _mid_int in _dr[_cid_int]:
                     continue
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 pass  # 类型不对就不过滤，保守起见让任务继续显示在 pending
 
         task_id = task.get("task_id", "")
@@ -665,7 +751,9 @@ def web_get_pending_list():
         created_at_str = ""
         wait_time = ""
         if created_at:
-            created_at_str = datetime.datetime.fromtimestamp(created_at).strftime("%m-%d %H:%M:%S")
+            created_at_str = datetime.datetime.fromtimestamp(created_at).strftime(
+                "%m-%d %H:%M:%S"
+            )
             elapsed = int(_time.time() - created_at)
             h, m = divmod(elapsed // 60, 60)
             wait_time = f"{h}h{m:02d}m" if h > 0 else f"{m}m"
@@ -696,25 +784,29 @@ def web_get_pending_list():
         elif not total_size:
             total_size = "未知"
 
-        task_id_display = task.get("extra_data", {}).get("task_id_display", str(task_id))
+        task_id_display = task.get("extra_data", {}).get(
+            "task_id_display", str(task_id)
+        )
 
         # All pending tasks show as "等待中" — no more "排队中" state
         queue_label = "等待中"
 
-        result.append({
-            "task_id": str(task_id),
-            "task_id_display": task_id_display,
-            "chat": str(task.get("chat_id", "")),
-            "chat_title": chat_title,
-            "filename": filename,
-            "total_size": total_size,
-            "url": url,
-            "source_type": source_type,
-            "created_at": created_at_str,
-            "created_ts": created_at,
-            "wait_time": wait_time,
-            "queue_label": queue_label,
-        })
+        result.append(
+            {
+                "task_id": str(task_id),
+                "task_id_display": task_id_display,
+                "chat": str(task.get("chat_id", "")),
+                "chat_title": chat_title,
+                "filename": filename,
+                "total_size": total_size,
+                "url": url,
+                "source_type": source_type,
+                "created_at": created_at_str,
+                "created_ts": created_at,
+                "wait_time": wait_time,
+                "queue_label": queue_label,
+            }
+        )
 
     # Sort by created_at ascending (earliest first)
     result.sort(key=lambda x: x.get("created_ts", 0))
@@ -730,13 +822,20 @@ def web_remove_pending():
     # Try int conversion since task_store uses int task_ids
     try:
         task_id_int = int(task_id)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         task_id_int = task_id
     remove_task(task_id_int)
     return jsonify({"code": "1", "message": "removed"})
 
 
-async def _async_retry_download(chat_id, msg_id, from_user_id="", placeholder_task_id="", source_link="", original_task_id=""):
+async def _async_retry_download(
+    chat_id,
+    msg_id,
+    from_user_id="",
+    placeholder_task_id="",
+    source_link="",
+    original_task_id="",
+):
     """Async helper: fetch the message and re-add to download queue
 
     Args:
@@ -752,7 +851,10 @@ async def _async_retry_download(chat_id, msg_id, from_user_id="", placeholder_ta
     def _restore_failed(reason):
         """Re-add to failed list if retry can't even start downloading."""
         try:
-            from hermes_telegram_downloader.module.download_stat import add_failed_download
+            from hermes_telegram_downloader.module.download_stat import (
+                add_failed_download,
+            )
+
             add_failed_download(
                 chat_id=chat_id,
                 msg_id=msg_id,
@@ -769,6 +871,7 @@ async def _async_retry_download(chat_id, msg_id, from_user_id="", placeholder_ta
         try:
             if placeholder_task_id:
                 from hermes_telegram_downloader.module.task_store import remove_task
+
                 remove_task(placeholder_task_id)
         except Exception:
             pass
@@ -776,7 +879,7 @@ async def _async_retry_download(chat_id, msg_id, from_user_id="", placeholder_ta
     try:
         try:
             cid = int(chat_id)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             cid = chat_id
 
         from hermes_telegram_downloader.module.bot import _bot
@@ -794,7 +897,10 @@ async def _async_retry_download(chat_id, msg_id, from_user_id="", placeholder_ta
         # for forwarded messages with stale file references.
         if source_link:
             try:
-                from hermes_telegram_downloader.module.pyrogram_extension import parse_link
+                from hermes_telegram_downloader.module.pyrogram_extension import (
+                    parse_link,
+                )
+
                 link_chat_id, link_msg_id, _ = await parse_link(client, source_link)
                 if link_chat_id and link_msg_id:
                     link_msg = await client.get_messages(link_chat_id, link_msg_id)
@@ -839,6 +945,7 @@ async def _async_retry_download(chat_id, msg_id, from_user_id="", placeholder_ta
 
         # Persist to bot_tasks.json so the task survives container restarts
         from hermes_telegram_downloader.module.task_store import save_task as _save_task
+
         saved_ok = _save_task(
             task_id=node.task_id,
             chat_id=cid,
@@ -852,13 +959,18 @@ async def _async_retry_download(chat_id, msg_id, from_user_id="", placeholder_ta
             extra_data={"task_id_display": node.task_id_display, "message_id": msg_id},
         )
         if not saved_ok:
-            logger.warning(f"Retry skipped: save_task refused (duplicate) chat={cid} msg={msg_id}")
+            logger.warning(
+                f"Retry skipped: save_task refused (duplicate) chat={cid} msg={msg_id}"
+            )
             return
 
         # Clean up the placeholder entry created by batch_retry
         if placeholder_task_id:
             try:
-                from hermes_telegram_downloader.module.task_store import remove_task as _remove_placeholder
+                from hermes_telegram_downloader.module.task_store import (
+                    remove_task as _remove_placeholder,
+                )
+
                 _remove_placeholder(placeholder_task_id)
             except Exception:
                 pass
@@ -879,14 +991,20 @@ async def _async_retry_download(chat_id, msg_id, from_user_id="", placeholder_ta
                 # 记录消息ID，让 report_bot_status 能编辑这条消息更新进度
                 node.reply_message_id = sent_msg.id
             except Exception as e:
-                logger.warning(f"Retry notification failed for user {from_user_id}: {e}")
+                logger.warning(
+                    f"Retry notification failed for user {from_user_id}: {e}"
+                )
 
-        logger.info(f"Retry: queued message {msg_id} from chat {cid} as task {node.task_id_display}")
+        logger.info(
+            f"Retry: queued message {msg_id} from chat {cid} as task {node.task_id_display}"
+        )
 
         # Do NOT trigger _consume_one_pending directly — let the periodic
         # _pending_consumer_loop (every 2s) pick it up. This ensures the
         # concurrency guard is always respected, preventing over-fill when
         # many retries are submitted simultaneously.
     except Exception as e:
-        logger.error(f"Retry failed for chat={chat_id} msg={msg_id}: {e}", exc_info=True)
+        logger.error(
+            f"Retry failed for chat={chat_id} msg={msg_id}: {e}", exc_info=True
+        )
         _restore_failed(f"重试失败: {e}")

@@ -179,6 +179,7 @@ Pyrogram 默认 `TCP.TIMEOUT=10s`，在 TG 限速时导致连接拆除 + MTProto
 
 ```python
 from pyrogram.connection.transport.tcp import TCP as _TCP
+
 _TCP.TIMEOUT = 900
 ```
 

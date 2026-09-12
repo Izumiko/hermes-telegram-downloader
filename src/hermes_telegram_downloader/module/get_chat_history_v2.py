@@ -1,7 +1,8 @@
 """Rewrite pyrogram.get_chat_history"""
 
+from collections.abc import AsyncGenerator
 from datetime import datetime
-from typing import AsyncGenerator, Optional, Union
+from typing import Optional, Union
 
 import pyrogram
 
@@ -12,13 +13,13 @@ from pyrogram import raw, types, utils
 async def get_chunk_v2(
     *,
     client: pyrogram.Client,
-    chat_id: Union[int, str],
+    chat_id: int | str,
     limit: int = 0,
     offset: int = 0,
     max_id: int = 0,
     from_message_id: int = 0,
     from_date: datetime = utils.zero_datetime(),
-    reverse: bool = False
+    reverse: bool = False,
 ):
     """get chunk"""
     from_message_id = from_message_id or (1 if reverse else 0)
@@ -50,14 +51,14 @@ async def get_chunk_v2(
 # pylint: disable = C0301
 async def get_chat_history_v2(
     self: pyrogram.Client,
-    chat_id: Union[int, str],
+    chat_id: int | str,
     limit: int = 0,
     max_id: int = 0,
     offset: int = 0,
     offset_id: int = 0,
     offset_date: datetime = utils.zero_datetime(),
     reverse: bool = False,
-) -> Optional[AsyncGenerator["types.Message", None]]:
+) -> AsyncGenerator[types.Message] | None:
     """Get messages from a chat history."""
     current = 0
     total = limit or (1 << 31) - 1

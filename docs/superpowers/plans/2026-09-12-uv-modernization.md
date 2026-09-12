@@ -424,19 +424,35 @@ git commit -m "chore: ruff 存量规则豁免"
 把：
 
 ```python
-app = Flask(__name__, 
-    template_folder=os.path.join(os.path.dirname(__file__), 'module', 'templates'),
-    static_folder=os.path.join(os.path.dirname(__file__), 'module', 'static'),
-    static_url_path='/module/static')
+app = Flask(
+    __name__,
+    template_folder=os.path.join(os.path.dirname(__file__), "module", "templates"),
+    static_folder=os.path.join(os.path.dirname(__file__), "module", "static"),
+    static_url_path="/module/static",
+)
 ```
 
 改为：
 
 ```python
-app = Flask(__name__,
-    template_folder=os.path.join(os.path.dirname(__file__), 'src', 'hermes_telegram_downloader', 'module', 'templates'),
-    static_folder=os.path.join(os.path.dirname(__file__), 'src', 'hermes_telegram_downloader', 'module', 'static'),
-    static_url_path='/module/static')
+app = Flask(
+    __name__,
+    template_folder=os.path.join(
+        os.path.dirname(__file__),
+        "src",
+        "hermes_telegram_downloader",
+        "module",
+        "templates",
+    ),
+    static_folder=os.path.join(
+        os.path.dirname(__file__),
+        "src",
+        "hermes_telegram_downloader",
+        "module",
+        "static",
+    ),
+    static_url_path="/module/static",
+)
 ```
 
 - [ ] **Step 2: 验证开发服务器可启动**

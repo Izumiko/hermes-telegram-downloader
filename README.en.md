@@ -180,6 +180,7 @@ Pyrogram's default `TCP.TIMEOUT=10s` causes reconnect storms when Telegram throt
 
 ```python
 from pyrogram.connection.transport.tcp import TCP as _TCP
+
 _TCP.TIMEOUT = 900
 ```
 

@@ -16,13 +16,13 @@ _lock = threading.Lock()
 
 def _get_next_seq(date_str: str) -> int:
     """Get next sequential number for today, auto-increment.
-    
+
     Date changes → seq resets to 1. Otherwise increments from last value.
     Thread-safe via _lock; caller must hold _lock.
     """
     try:
         if os.path.exists(_COUNTER_FILE):
-            with open(_COUNTER_FILE, "r") as f:
+            with open(_COUNTER_FILE) as f:
                 data = json.load(f)
             if data.get("date") == date_str:
                 data["seq"] += 1
@@ -49,7 +49,7 @@ def _set_seq(date_str: str, seq: int):
     try:
         os.makedirs(os.path.dirname(_COUNTER_FILE), exist_ok=True)
         if os.path.exists(_COUNTER_FILE):
-            with open(_COUNTER_FILE, "r") as f:
+            with open(_COUNTER_FILE) as f:
                 data = json.load(f)
             if data.get("date") == date_str and data.get("seq", 0) >= seq:
                 return  # already larger, no overwrite
@@ -73,7 +73,7 @@ def _load_all() -> list:
     try:
         if not os.path.exists(_TASKS_FILE):
             return []
-        with open(_TASKS_FILE, "r", encoding="utf-8") as f:
+        with open(_TASKS_FILE, encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         logger.warning(f"Failed to load bot tasks: {e}")
@@ -92,9 +92,18 @@ def _save_all(tasks: list):
         logger.warning(f"Failed to save bot tasks: {e}")
 
 
-def save_task(task_id, chat_id, url, start_offset_id, end_offset_id,
-              limit, download_filter, from_user_id, task_type="download",
-              extra_data=None):
+def save_task(
+    task_id,
+    chat_id,
+    url,
+    start_offset_id,
+    end_offset_id,
+    limit,
+    download_filter,
+    from_user_id,
+    task_type="download",
+    extra_data=None,
+):
     """Save a new bot task to the store.
 
     防覆盖保险：同 task_id 已有任务且消息不同 → 拒绝写入；
@@ -118,9 +127,12 @@ def save_task(task_id, chat_id, url, start_offset_id, end_offset_id,
         # Guard 2: refuse if same (chat, msg) already pending/downloading
         if new_mid is not None:
             for t in tasks:
-                if (str(t.get("chat_id")) == str(chat_id)
-                        and str((t.get("extra_data") or {}).get("message_id")) == str(new_mid)
-                        and t.get("download_state") in ("pending", "downloading")):
+                if (
+                    str(t.get("chat_id")) == str(chat_id)
+                    and str((t.get("extra_data") or {}).get("message_id"))
+                    == str(new_mid)
+                    and t.get("download_state") in ("pending", "downloading")
+                ):
                     logger.warning(
                         f"save_task skipped: chat {chat_id} msg {new_mid} already "
                         f"exists ({(t.get('extra_data') or {}).get('task_id_display')})"
@@ -128,22 +140,24 @@ def save_task(task_id, chat_id, url, start_offset_id, end_offset_id,
                     return False
         # Remove existing task with same task_id (same content = legitimate re-save)
         tasks = [t for t in tasks if t.get("task_id") != task_id]
-        tasks.append({
-            "task_id": task_id,
-            "chat_id": chat_id,
-            "url": url,
-            "start_offset_id": start_offset_id,
-            "end_offset_id": end_offset_id,
-            "limit": limit,
-            "download_filter": download_filter,
-            "from_user_id": from_user_id,
-            "task_type": task_type,
-            "extra_data": extra_data or {},
-            "status": "running",
-            "download_state": "pending",
-            "last_message_id": start_offset_id,
-            "created_at": time.time(),
-        })
+        tasks.append(
+            {
+                "task_id": task_id,
+                "chat_id": chat_id,
+                "url": url,
+                "start_offset_id": start_offset_id,
+                "end_offset_id": end_offset_id,
+                "limit": limit,
+                "download_filter": download_filter,
+                "from_user_id": from_user_id,
+                "task_type": task_type,
+                "extra_data": extra_data or {},
+                "status": "running",
+                "download_state": "pending",
+                "last_message_id": start_offset_id,
+                "created_at": time.time(),
+            }
+        )
         _save_all(tasks)
         logger.info(f"Saved bot task {task_id} ({task_type}) to persistence store")
 
@@ -164,9 +178,19 @@ def complete_task(task_id):
     """Mark a task as completed and remove it from the store."""
     with _lock:
         tasks = _load_all()
-        tid = task_id if isinstance(task_id, int) else int(task_id) if str(task_id).isdigit() else task_id
+        tid = (
+            task_id
+            if isinstance(task_id, int)
+            else int(task_id)
+            if str(task_id).isdigit()
+            else task_id
+        )
         before = len(tasks)
-        tasks = [t for t in tasks if t.get("task_id") != tid and str(t.get("task_id", "")) != str(task_id)]
+        tasks = [
+            t
+            for t in tasks
+            if t.get("task_id") != tid and str(t.get("task_id", "")) != str(task_id)
+        ]
         _save_all(tasks)
         if len(tasks) < before:
             logger.info(f"Removed completed bot task {task_id} from store")
@@ -181,22 +205,29 @@ def get_running_tasks() -> list:
 
 def get_pending_tasks() -> list:
     """Get all tasks with download_state='pending' (not yet started downloading).
-    
+
     'queued' state has been removed — consumer uses _in_queue set (in-memory)
     to track tasks already in asyncio Queue. Only 'pending' tasks need consuming.
     """
     with _lock:
         tasks = _load_all()
-        return [t for t in tasks if t.get("status") == "running"
-                and t.get("download_state", "pending") == "pending"]
+        return [
+            t
+            for t in tasks
+            if t.get("status") == "running"
+            and t.get("download_state", "pending") == "pending"
+        ]
 
 
 def get_downloading_tasks() -> list:
     """Get all tasks with download_state='downloading' (actively downloading)."""
     with _lock:
         tasks = _load_all()
-        return [t for t in tasks if t.get("status") == "running"
-                and t.get("download_state") == "downloading"]
+        return [
+            t
+            for t in tasks
+            if t.get("status") == "running" and t.get("download_state") == "downloading"
+        ]
 
 
 def update_download_state(task_id, state: str):

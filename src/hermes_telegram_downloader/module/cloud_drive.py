@@ -1,4 +1,5 @@
 """provide upload cloud drive"""
+
 import asyncio
 import functools
 import importlib
@@ -6,8 +7,8 @@ import inspect
 import os
 import re
 from asyncio import subprocess
+from collections.abc import Callable
 from subprocess import Popen
-from typing import Callable
 from zipfile import ZipFile
 
 from loguru import logger

@@ -5,11 +5,12 @@ import functools
 import os
 import time
 from asyncio import Lock
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Callable, List, Optional, Union
+from typing import List, Optional, Union
 
 from loguru import logger
 from ruamel import yaml
@@ -121,11 +122,11 @@ class TaskNode:
 
     def __init__(
         self,
-        chat_id: Union[int, str],
-        from_user_id: Union[int, str] = None,
+        chat_id: int | str,
+        from_user_id: int | str = None,
         reply_message_id: int = 0,
         replay_message: str = None,
-        upload_telegram_chat_id: Union[int, str] = None,
+        upload_telegram_chat_id: int | str = None,
         has_protected_content: bool = False,
         download_filter: str = None,
         limit: int = 0,
@@ -157,8 +158,12 @@ class TaskNode:
         self.skip_download_task = 0
         self.last_reply_time = time.time()
         self.last_edit_msg: str = ""
-        self.last_progress_pct: int = -1  # Last reported progress percentage (0-100), -1 = never reported
-        self.initial_progress_reported: bool = False  # Whether first progress report has been sent
+        self.last_progress_pct: int = (
+            -1
+        )  # Last reported progress percentage (0-100), -1 = never reported
+        self.initial_progress_reported: bool = (
+            False  # Whether first progress report has been sent
+        )
         self.flood_wait_until: float = 0  # Non-blocking FLOOD_WAIT cooldown
         self.total_download_byte = 0
         self.forward_msg_detail_str: str = ""
@@ -187,8 +192,12 @@ class TaskNode:
         if task_id_display:
             self.task_id_display = task_id_display
         else:
-            from hermes_telegram_downloader.module.task_store import _get_next_seq, _lock
-            date_str = time.strftime('%m%d')
+            from hermes_telegram_downloader.module.task_store import (
+                _get_next_seq,
+                _lock,
+            )
+
+            date_str = time.strftime("%m%d")
             with _lock:
                 seq = _get_next_seq(date_str)
             self.task_id_display = f"{date_str}-{seq}"
@@ -327,7 +336,7 @@ class ChatDownloadConfig:
         self.total_task: int = 0
         self.finish_task: int = 0
         self.need_check: bool = False
-        self.upload_telegram_chat_id: Union[int, str] = None
+        self.upload_telegram_chat_id: int | str = None
         self.node: TaskNode = TaskNode(0)
 
 
@@ -400,14 +409,14 @@ class Application:
         self.api_hash: str = ""
         self.bot_token: str = ""
         self._chat_id: str = ""
-        self.media_types: List[str] = []
+        self.media_types: list[str] = []
         self.file_formats: dict = {}
         self.proxy: dict = {}
         self.restart_program = False
         self.config: dict = {}
         self.app_data: dict = {}
-        self.file_path_prefix: List[str] = ["chat_title", "media_datetime"]
-        self.file_name_prefix: List[str] = ["message_id", "file_name"]
+        self.file_path_prefix: list[str] = ["chat_title", "media_datetime"]
+        self.file_name_prefix: list[str] = ["message_id", "file_name"]
         self.file_name_prefix_split: str = " - "
         self.log_file_path = os.path.join(os.path.abspath("."), "log")
         self.session_file_path = os.path.join(os.path.abspath("."), "sessions")
@@ -631,9 +640,9 @@ class Application:
                     "ids_to_retry"
                 ]
                 for it in self.chat_download_config[self._chat_id].ids_to_retry:
-                    self.chat_download_config[self._chat_id].ids_to_retry_dict[
-                        it
-                    ] = True
+                    self.chat_download_config[self._chat_id].ids_to_retry_dict[it] = (
+                        True
+                    )
 
             self.chat_download_config[self._chat_id].last_read_message_id = _config[
                 "last_read_message_id"
@@ -683,9 +692,9 @@ class Application:
                     "ids_to_retry"
                 ]
                 for it in self.chat_download_config[self._chat_id].ids_to_retry:
-                    self.chat_download_config[self._chat_id].ids_to_retry_dict[
-                        it
-                    ] = True
+                    self.chat_download_config[self._chat_id].ids_to_retry_dict[it] = (
+                        True
+                    )
                 self.app_data.pop("ids_to_retry")
         else:
             if app_data.get("chat"):
@@ -700,9 +709,9 @@ class Application:
                             "ids_to_retry", []
                         )
                         for it in self.chat_download_config[chat_id].ids_to_retry:
-                            self.chat_download_config[chat_id].ids_to_retry_dict[
-                                it
-                            ] = True
+                            self.chat_download_config[chat_id].ids_to_retry_dict[it] = (
+                                True
+                            )
         return True
 
     async def upload_file(
@@ -730,7 +739,9 @@ class Application:
                 self.executor,
                 functools.partial(
                     CloudDrive.aligo_upload_file,
-                    self.cloud_drive_config, self.save_path, local_file_path
+                    self.cloud_drive_config,
+                    self.save_path,
+                    local_file_path,
                 ),
             )
 
@@ -769,7 +780,7 @@ class Application:
         return res
 
     def get_file_name(
-        self, message_id: int, file_name: Optional[str], caption: Optional[str]
+        self, message_id: int, file_name: str | None, caption: str | None
     ) -> str:
         """Get file save path prefix.
 
@@ -973,7 +984,7 @@ class Application:
         return False
 
     def set_caption_name(
-        self, chat_id: Union[int, str], media_group_id: Optional[str], caption: str
+        self, chat_id: int | str, media_group_id: str | None, caption: str
     ):
         """set caption name map
 
@@ -997,8 +1008,8 @@ class Application:
             self.caption_name_dict[chat_id] = {media_group_id: caption}
 
     def get_caption_name(
-        self, chat_id: Union[int, str], media_group_id: Optional[str]
-    ) -> Optional[str]:
+        self, chat_id: int | str, media_group_id: str | None
+    ) -> str | None:
         """set caption name map
                 media_group_id: Optional[str]
             The unique identifier of a media message group this message belongs to.
@@ -1017,7 +1028,7 @@ class Application:
         return str(self.caption_name_dict[chat_id][media_group_id])
 
     def set_caption_entities(
-        self, chat_id: Union[int, str], media_group_id: Optional[str], caption_entities
+        self, chat_id: int | str, media_group_id: str | None, caption_entities
     ):
         """
         set caption entities map
