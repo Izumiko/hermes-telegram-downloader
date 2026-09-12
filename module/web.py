@@ -839,7 +839,7 @@ async def _async_retry_download(chat_id, msg_id, from_user_id="", placeholder_ta
 
         # Persist to bot_tasks.json so the task survives container restarts
         from module.task_store import save_task as _save_task
-        _save_task(
+        saved_ok = _save_task(
             task_id=node.task_id,
             chat_id=cid,
             url="",
@@ -851,6 +851,9 @@ async def _async_retry_download(chat_id, msg_id, from_user_id="", placeholder_ta
             task_type="download",
             extra_data={"task_id_display": node.task_id_display, "message_id": msg_id},
         )
+        if not saved_ok:
+            logger.warning(f"Retry skipped: save_task refused (duplicate) chat={cid} msg={msg_id}")
+            return
 
         # Clean up the placeholder entry created by batch_retry
         if placeholder_task_id:

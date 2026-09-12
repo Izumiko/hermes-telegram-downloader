@@ -328,6 +328,21 @@ class DownloadBot:
 
             logger.info(f"Found {len(all_tasks)} tasks, all queued as pending (will consume one by one)")
 
+            # FIX: sync self.task_id to max existing internal id to prevent
+            # overwrite on restart. Without this, gen_task_id starts from 0
+            # and new tasks reuse ids 1,2,3... overwriting existing tasks.
+            try:
+                max_tid = max(
+                    (t.get("task_id") for t in all_tasks
+                     if isinstance(t.get("task_id"), int)),
+                    default=0
+                )
+                if max_tid > self.task_id:
+                    self.task_id = max_tid
+                    logger.info(f"Synced internal task_id counter to {max_tid} (max existing)")
+            except Exception:
+                pass
+
             # Start periodic pending consumer loop (60s interval)
             if not hasattr(self, "_pending_loop_started") or not self._pending_loop_started:
                 self.app.loop.create_task(_pending_consumer_loop())

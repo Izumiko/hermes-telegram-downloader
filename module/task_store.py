@@ -95,10 +95,38 @@ def _save_all(tasks: list):
 def save_task(task_id, chat_id, url, start_offset_id, end_offset_id,
               limit, download_filter, from_user_id, task_type="download",
               extra_data=None):
-    """Save a new bot task to the store."""
+    """Save a new bot task to the store.
+
+    防覆盖保险：同 task_id 已有任务且消息不同 → 拒绝写入；
+    同 (chat, message_id) 已有 pending/downloading 任务 → 拒绝写入。
+    """
     with _lock:
         tasks = _load_all()
-        # Remove existing task with same task_id (shouldn't happen but safe)
+        new_mid = (extra_data or {}).get("message_id")
+        # Guard 1: refuse to overwrite a different task that holds the same id
+        for t in tasks:
+            if t.get("task_id") == task_id:
+                old_mid = (t.get("extra_data") or {}).get("message_id")
+                if str(old_mid) != str(new_mid):
+                    logger.error(
+                        f"REFUSED save_task: id {task_id} already holds task "
+                        f"(chat {t.get('chat_id')} msg {old_mid}); "
+                        f"new write (chat {chat_id} msg {new_mid}) would destroy it"
+                    )
+                    return False
+                break
+        # Guard 2: refuse if same (chat, msg) already pending/downloading
+        if new_mid is not None:
+            for t in tasks:
+                if (str(t.get("chat_id")) == str(chat_id)
+                        and str((t.get("extra_data") or {}).get("message_id")) == str(new_mid)
+                        and t.get("download_state") in ("pending", "downloading")):
+                    logger.warning(
+                        f"save_task skipped: chat {chat_id} msg {new_mid} already "
+                        f"exists ({(t.get('extra_data') or {}).get('task_id_display')})"
+                    )
+                    return False
+        # Remove existing task with same task_id (same content = legitimate re-save)
         tasks = [t for t in tasks if t.get("task_id") != task_id]
         tasks.append({
             "task_id": task_id,
