@@ -605,6 +605,8 @@ async def download_task(client, message, node: TaskNode):
     if not node.bot:
         app.set_download_id(node, message.id, download_status)
     node.download_status[message.id] = download_status
+    if download_status is not DownloadStatus.Downloading:
+        node.stat(download_status)
     file_size = os.path.getsize(file_name) if file_name else 0
     # Record failed downloads to the failed list for webui display
     if download_status is DownloadStatus.FailedDownload:
