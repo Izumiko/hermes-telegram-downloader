@@ -1,5 +1,8 @@
 from hermes_telegram_downloader.module.tg.client import proxy_from_config
-from hermes_telegram_downloader.module.tg.errors import is_file_ref_expired, wait_seconds_from_flood
+from hermes_telegram_downloader.module.tg.errors import (
+    is_file_ref_expired,
+    wait_seconds_from_flood,
+)
 
 
 def test_proxy_from_config_none():

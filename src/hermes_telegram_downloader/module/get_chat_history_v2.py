@@ -18,7 +18,7 @@ async def get_chunk_v2(
     offset: int = 0,
     max_id: int = 0,
     from_message_id: int = 0,
-    from_date: datetime = utils.zero_datetime(),
+    from_date: datetime = utils.zero_datetime(),  # noqa: B008
     reverse: bool = False,
 ):
     """get chunk"""
@@ -56,7 +56,7 @@ async def get_chat_history_v2(
     max_id: int = 0,
     offset: int = 0,
     offset_id: int = 0,
-    offset_date: datetime = utils.zero_datetime(),
+    offset_date: datetime = utils.zero_datetime(),  # noqa: B008
     reverse: bool = False,
 ) -> AsyncGenerator[types.Message] | None:
     """Get messages from a chat history."""

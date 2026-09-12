@@ -122,11 +122,6 @@ def get_flood_wait():
     import time as _now
 
     from hermes_telegram_downloader.module.download_stat import _throttle_state
-    from hermes_telegram_downloader.module.pyrogram_extension import (
-        _unified_flood_wait,
-        get_flood_wait_remaining,
-        is_flood_wait_active,
-    )
 
     now = _now.time()
     # throttle active 直接看 notified — 只要没解除限速就一直显示
@@ -135,10 +130,24 @@ def get_flood_wait():
     throttle_elapsed = (
         int(now - _throttle_state["since"]) if _throttle_state["since"] > 0 else 0
     )
+    try:
+        from hermes_telegram_downloader.module.pyrogram_extension import (
+            _unified_flood_wait,
+            get_flood_wait_remaining,
+            is_flood_wait_active,
+        )
+
+        flood_active = is_flood_wait_active()
+        remaining = int(get_flood_wait_remaining())
+        reason = _unified_flood_wait.get("reason", "")
+    except ImportError:
+        flood_active = False
+        remaining = 0
+        reason = ""
     return jsonify(
-        active=is_flood_wait_active(),
-        remaining=int(get_flood_wait_remaining()),
-        reason=_unified_flood_wait.get("reason", ""),
+        active=flood_active,
+        remaining=remaining,
+        reason=reason,
         throttle={
             "active": throttle_active,
             "elapsed": throttle_elapsed,
@@ -191,16 +200,16 @@ def set_max_workers():
     _app.max_download_task = n
     # max_concurrent_transmissions follows max_download_task * 5
     _app.max_concurrent_transmissions = n * 5
-    # Apply to pyrogram client if available
-    from hermes_telegram_downloader.module.pyrogram_extension import (
-        set_max_concurrent_transmissions,
-    )
-
     try:
         from hermes_telegram_downloader.module.bot import _bot
+        from hermes_telegram_downloader.module.pyrogram_extension import (
+            set_max_concurrent_transmissions,
+        )
 
         if _bot and _bot.client:
             set_max_concurrent_transmissions(_bot.client, n * 5)
+    except ImportError:
+        pass
     except Exception:
         pass
     # Persist to config file
@@ -472,9 +481,14 @@ def web_check_file_exists():
 @_flask_app.route("/delete_task", methods=["POST"])
 def web_delete_task():
     """Delete a specific download task. If delete_file=true, also remove the local file."""
-    from hermes_telegram_downloader.module.pyrogram_extension import (
-        remove_download_cache,
-    )
+    try:
+        from hermes_telegram_downloader.module.pyrogram_extension import (
+            remove_download_cache,
+        )
+    except ImportError:
+
+        def remove_download_cache(*_args, **_kwargs):
+            return None
 
     task_id = request.args.get("task_id")
     if not task_id:

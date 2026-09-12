@@ -6,15 +6,14 @@ import pytest
 
 SUBMODULES = [
     "hermes_telegram_downloader.module.app",
-    "hermes_telegram_downloader.module.bot",
     "hermes_telegram_downloader.module.cloud_drive",
     "hermes_telegram_downloader.module.download_stat",
     "hermes_telegram_downloader.module.filter",
-    "hermes_telegram_downloader.module.get_chat_history_v2",
     "hermes_telegram_downloader.module.language",
-    "hermes_telegram_downloader.module.pyrogram_extension",
-    "hermes_telegram_downloader.module.send_media_group_v2",
     "hermes_telegram_downloader.module.task_store",
+    "hermes_telegram_downloader.module.tg.client",
+    "hermes_telegram_downloader.module.tg.download",
+    "hermes_telegram_downloader.module.tg.history",
     "hermes_telegram_downloader.module.web",
     "hermes_telegram_downloader.utils.format",
     "hermes_telegram_downloader.utils.log",

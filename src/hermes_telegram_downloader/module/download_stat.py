@@ -7,7 +7,6 @@ import time
 from enum import Enum
 
 from loguru import logger
-from pyrogram import Client
 
 from hermes_telegram_downloader.module.app import TaskNode
 from hermes_telegram_downloader.utils.format import format_byte
@@ -315,11 +314,9 @@ def _check_and_reset_global_speed():
 async def update_download_status(
     down_byte: int,
     total_size: int,
-    message_id: int,
-    file_name: str,
-    start_time: float,
     node: TaskNode,
-    client: Client,
+    message,
+    client=None,
 ):
     """update_download_status"""
     cur_time = time.time()
@@ -328,22 +325,29 @@ async def update_download_status(
     global _total_download_size
     global _last_download_time
 
-    if node.is_stop_transmission:
-        client.stop_transmission()
-
+    message_id = getattr(message, "id", 0)
     chat_id = node.chat_id
+    existing = (_download_result.get(chat_id) or {}).get(message_id) or {}
+    file_name = existing.get("file_name") or ""
+    if not file_name:
+        file_obj = getattr(message, "file", None)
+        file_name = getattr(file_obj, "name", None) or str(message_id)
+    start_time = existing.get("start_time") or cur_time
+
+    if node.is_stop_transmission:
+        node.stop_transmission()
 
     # Check if this task has been cancelled (deleted from UI)
     composite_key = f"{chat_id}_{message_id}"
     if composite_key in _cancelled_tasks or str(node.task_id) in _cancelled_tasks:
-        client.stop_transmission()
+        node.stop_transmission()
         return
 
     # Check if this individual task is paused (by composite key or task_id)
     composite_key = f"{chat_id}_{message_id}"
     while is_task_paused(composite_key) or is_task_paused(node.task_id):
         if node.is_stop_transmission:
-            client.stop_transmission()
+            node.stop_transmission()
         # Reset this task's speed to 0 while paused
         _reset_task_speed(composite_key)
         _check_and_reset_global_speed()
@@ -351,7 +355,7 @@ async def update_download_status(
 
     while get_download_state() == DownloadState.StopDownload:
         if node.is_stop_transmission:
-            client.stop_transmission()
+            node.stop_transmission()
         await asyncio.sleep(1)
 
     # 更新进度心跳 — worker watchdog 用这个检测死连接
@@ -516,20 +520,26 @@ async def update_download_status(
     # 占位符→真实数据转换时强制刷新 bot 消息（避免卡在"获取文件信息中..."）
     if _placeholder_resolved and node.bot:
         node.last_progress_pct = -1  # 重置进度桶，让 0~20% 也能触发更新
-        from hermes_telegram_downloader.module.pyrogram_extension import (
-            report_bot_status,
-        )
+        try:
+            from hermes_telegram_downloader.module.pyrogram_extension import (
+                report_bot_status,
+            )
 
-        await report_bot_status(node.bot, node, immediate_reply=True)
+            await report_bot_status(node.bot, node, immediate_reply=True)
+        except ImportError:
+            pass
 
     # Send initial progress report when download first starts
     if node.bot and not node.initial_progress_reported and down_byte > 0:
         node.initial_progress_reported = True
-        from hermes_telegram_downloader.module.pyrogram_extension import (
-            report_bot_status,
-        )
+        try:
+            from hermes_telegram_downloader.module.pyrogram_extension import (
+                report_bot_status,
+            )
 
-        await report_bot_status(node.bot, node)
+            await report_bot_status(node.bot, node)
+        except ImportError:
+            report_bot_status = None
 
         # Report progress at every 20% milestone during active download
         dl_result = _download_result.get(chat_id, {})
@@ -551,7 +561,8 @@ async def update_download_status(
             )
             if bucket != prev:
                 node.last_progress_pct = pct
-                await report_bot_status(node.bot, node)
+                if report_bot_status:
+                    await report_bot_status(node.bot, node)
 
     if cur_time - _last_download_time >= 1.0:
         # update speed

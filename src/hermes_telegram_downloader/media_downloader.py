@@ -2,22 +2,23 @@
 
 import asyncio
 import logging
+import mimetypes
 import os
 import shutil
 import time
+from functools import wraps
 
-import pyrogram
 from loguru import logger
-from pyrogram.types import Audio, Document, Photo, Video, VideoNote, Voice
 from rich.logging import RichHandler
+from telethon.errors import FileReferenceExpiredError
 
 from hermes_telegram_downloader.module.app import (
     Application,
     ChatDownloadConfig,
+    CloudDriveUploadStat,
     DownloadStatus,
     TaskNode,
 )
-from hermes_telegram_downloader.module.bot import start_download_bot, stop_download_bot
 from hermes_telegram_downloader.module.download_stat import (
     add_failed_download as _add_failed_download,
 )
@@ -27,23 +28,22 @@ from hermes_telegram_downloader.module.download_stat import (
     set_chat_title,
     update_download_status,
 )
-from hermes_telegram_downloader.module.get_chat_history_v2 import get_chat_history_v2
 from hermes_telegram_downloader.module.language import _t
-from hermes_telegram_downloader.module.pyrogram_extension import (
-    HookClient,
-    fetch_message,
-    get_extension,
-    record_download_status,
-    report_bot_download_status,
-    set_max_concurrent_transmissions,
-    set_meta_data,
-    update_cloud_upload_stat,
-    upload_telegram_chat,
-)
 from hermes_telegram_downloader.module.task_store import (
     update_download_state,
     update_task_progress,
 )
+from hermes_telegram_downloader.module.tg.client import (
+    USER_SESSION_NAME,
+    create_user_client,
+)
+from hermes_telegram_downloader.module.tg.download import download_message_media
+from hermes_telegram_downloader.module.tg.errors import (
+    is_file_ref_expired,
+    is_flood_wait,
+    wait_seconds_from_flood,
+)
+from hermes_telegram_downloader.module.tg.history import iter_chat_messages
 from hermes_telegram_downloader.module.web import init_web
 from hermes_telegram_downloader.utils.format import truncate_filename, validate_title
 from hermes_telegram_downloader.utils.log import LogFilter
@@ -86,10 +86,13 @@ _active_downloads = (
 )
 # 替代 get_downloading_tasks() JSON 读写做并发守卫，消除 TOCTOU 竞态
 
-logging.getLogger("pyrogram.session.session").addFilter(LogFilter())
-logging.getLogger("pyrogram.client").addFilter(LogFilter())
+logging.getLogger("telethon.network").addFilter(LogFilter())
+logging.getLogger("telethon.client.downloads").addFilter(LogFilter())
 
-logging.getLogger("pyrogram").setLevel(logging.WARNING)
+logging.getLogger("telethon").setLevel(logging.WARNING)
+
+_download_cache: dict = {}
+_unified_flood_wait = {"until": 0.0, "reason": ""}
 
 
 def _check_download_finish(media_size: int, download_path: str, ui_file_name: str):
@@ -104,7 +107,7 @@ def _check_download_finish(media_size: int, download_path: str, ui_file_name: st
             f"{media_size}, {_t('file name')}: {ui_file_name}"
         )
         os.remove(download_path)
-        raise pyrogram.errors.exceptions.bad_request_400.BadRequest()
+        raise FileReferenceExpiredError(None)
 
 
 def _move_to_download_path(temp_download_path: str, download_path: str):
@@ -133,6 +136,209 @@ def _can_download(_type: str, file_formats: dict, file_format: str | None) -> bo
 def _is_exist(file_path: str) -> bool:
     """Check if a file exists and it is not a directory."""
     return not os.path.isdir(file_path) and os.path.exists(file_path)
+
+
+def remove_download_cache(chat_id, message_id):
+    _download_cache.pop((chat_id, message_id), None)
+
+
+def record_download_status(func):
+    @wraps(func)
+    async def inner(client, message, media_types, file_formats, node):
+        if (
+            _download_cache.get((node.chat_id, message.id))
+            is DownloadStatus.Downloading
+        ):
+            return DownloadStatus.Downloading, None, ""
+        _download_cache[(node.chat_id, message.id)] = DownloadStatus.Downloading
+        status, file_name, error_message = await func(
+            client, message, media_types, file_formats, node
+        )
+        _download_cache[(node.chat_id, message.id)] = status
+        return status, file_name, error_message
+
+    return inner
+
+
+def get_extension(_file_id, mime_type, dot=True) -> str:
+    mime_type = (mime_type or "").lower()
+    guessed = mimetypes.guess_extension(mime_type) if mime_type else None
+    if guessed:
+        ext = guessed.lstrip(".")
+        if ext == "jpe":
+            ext = "jpg"
+    elif mime_type.startswith("image/"):
+        ext = "jpg"
+    elif mime_type.startswith("video/"):
+        ext = "mp4"
+    elif mime_type.startswith("audio/ogg"):
+        ext = "ogg"
+    elif mime_type.startswith("audio/"):
+        ext = "mp3"
+    else:
+        ext = "unknown"
+    return f".{ext}" if dot else ext
+
+
+def _media_mime(media_obj) -> str:
+    return getattr(media_obj, "mime_type", None) or ""
+
+
+def _media_size(media_obj, message=None) -> int:
+    size = getattr(media_obj, "file_size", None) or getattr(media_obj, "size", None)
+    if size:
+        return size
+    if message is not None:
+        file_obj = getattr(message, "file", None)
+        if file_obj is not None and getattr(file_obj, "size", None):
+            return file_obj.size
+    best = 0
+    for item in getattr(media_obj, "sizes", None) or []:
+        best = max(best, getattr(item, "size", 0) or 0)
+    return best
+
+
+def _media_file_name(media_obj):
+    name = getattr(media_obj, "file_name", None)
+    if name:
+        return name
+    for attr in getattr(media_obj, "attributes", None) or []:
+        name = getattr(attr, "file_name", None)
+        if name:
+            return name
+    return None
+
+
+def _media_attr(media_obj, field):
+    value = getattr(media_obj, field, None)
+    if value is not None:
+        return value
+    for attr in getattr(media_obj, "attributes", None) or []:
+        if hasattr(attr, field):
+            return getattr(attr, field)
+    return None
+
+
+def _message_media_attr(message, _type):
+    if _type == "animation":
+        return getattr(message, "gif", None) or getattr(message, "animation", None)
+    media = getattr(message, _type, None)
+    if media is None:
+        return None
+    if _type == "document" and (
+        getattr(message, "video", None)
+        or getattr(message, "audio", None)
+        or getattr(message, "voice", None)
+        or getattr(message, "video_note", None)
+        or getattr(message, "gif", None)
+        or getattr(message, "sticker", None)
+    ):
+        return None
+    return media
+
+
+def _message_caption(message):
+    caption = getattr(message, "caption", None)
+    if caption:
+        return caption
+    if getattr(message, "media", None):
+        return getattr(message, "text", None) or getattr(message, "raw_text", None)
+    return None
+
+
+def _message_grouped_id(message):
+    return getattr(message, "media_group_id", None) or getattr(
+        message, "grouped_id", None
+    )
+
+
+def _message_caption_entities(message):
+    return getattr(message, "caption_entities", None) or getattr(
+        message, "entities", None
+    )
+
+
+def _is_empty_message(message) -> bool:
+    if message is None:
+        return True
+    if getattr(message, "empty", False):
+        return True
+    return type(message).__name__ == "MessageEmpty"
+
+
+async def fetch_message(client, message):
+    chat = getattr(message, "chat_id", None)
+    if chat is None:
+        chat = getattr(getattr(message, "chat", None), "id", None)
+    if chat is None:
+        return None
+    try:
+        return await asyncio.wait_for(
+            client.get_messages(chat, ids=message.id),
+            timeout=60,
+        )
+    except Exception:
+        return None
+
+
+def set_meta_data(meta_data: MetaData, message, caption: str = None):
+    meta_data.message_date = getattr(message, "date", None)
+    if caption:
+        meta_data.message_caption = caption
+    else:
+        meta_data.message_caption = _message_caption(message) or ""
+    meta_data.message_id = getattr(message, "id", None)
+    from_user = getattr(message, "from_user", None) or getattr(message, "sender", None)
+    meta_data.sender_id = (
+        getattr(from_user, "id", None) or getattr(message, "sender_id", 0) or 0
+    )
+    meta_data.sender_name = (
+        getattr(from_user, "username", None) if from_user else ""
+    ) or ""
+    meta_data.reply_to_message_id = (
+        getattr(message, "reply_to_message_id", None)
+        or getattr(message, "reply_to_msg_id", None)
+        or 1
+    )
+    meta_data.message_thread_id = getattr(message, "message_thread_id", 1)
+    media_obj = None
+    for kind in meta_data.AVAILABLE_MEDIA:
+        media_obj = _message_media_attr(message, kind)
+        if media_obj is not None:
+            meta_data.media_type = kind
+            break
+    else:
+        return
+    meta_data.media_file_name = _media_file_name(media_obj) or ""
+    meta_data.media_file_size = _media_size(media_obj, message)
+    meta_data.media_width = _media_attr(media_obj, "width") or _media_attr(
+        media_obj, "w"
+    )
+    meta_data.media_height = _media_attr(media_obj, "height") or _media_attr(
+        media_obj, "h"
+    )
+    meta_data.media_duration = _media_attr(media_obj, "duration")
+    meta_data.file_extension = get_extension(None, _media_mime(media_obj), False)
+
+
+async def update_cloud_upload_stat(
+    transferred,
+    total,
+    percentage,
+    speed,
+    eta,
+    node: TaskNode,
+    message_id: int,
+    file_name: str,
+):
+    node.cloud_drive_upload_stat_dict[message_id] = CloudDriveUploadStat(
+        file_name=file_name,
+        transferred=transferred,
+        total=total,
+        percentage=percentage,
+        speed=speed,
+        eta=eta,
+    )
 
 
 def _cleanup_temp_file(temp_file_name: str):
@@ -211,21 +417,23 @@ def _cleanup_stale_temp_files():
 
 async def _get_media_meta(
     chat_id: int | str,
-    message: pyrogram.types.Message,
-    media_obj: Audio | Document | Photo | Video | VideoNote | Voice,
+    message,
+    media_obj,
     _type: str,
 ) -> tuple[str, str, str | None]:
     """Extract file name and file id from media object."""
+    mime = _media_mime(media_obj)
     if _type in ["audio", "document", "video"]:
-        file_format: str | None = media_obj.mime_type.split("/")[-1]
+        file_format: str | None = mime.split("/")[-1] if mime else None
     else:
         file_format = None
 
     file_name = None
     temp_file_name = None
     dirname = validate_title(f"{chat_id}")
-    if message.chat and message.chat.title:
-        dirname = validate_title(f"{message.chat.title}")
+    chat = getattr(message, "chat", None)
+    if chat and getattr(chat, "title", None):
+        dirname = validate_title(f"{chat.title}")
 
     if message.date:
         datetime_dir_name = message.date.strftime(app.date_format)
@@ -233,40 +441,41 @@ async def _get_media_meta(
         datetime_dir_name = "0"
 
     if _type in ["voice", "video_note"]:
-        file_format = media_obj.mime_type.split("/")[-1]
+        file_format = mime.split("/")[-1] if mime else "ogg"
         file_save_path = app.get_file_save_path(_type, dirname, datetime_dir_name)
-        file_name = f"{message.id} - {_type}_{media_obj.date.isoformat()}.{file_format}"
+        media_date = getattr(media_obj, "date", None) or message.date
+        file_name = f"{message.id} - {_type}_{media_date.isoformat()}.{file_format}"
         file_name = validate_title(file_name)
         temp_file_name = os.path.join(app.temp_save_path, dirname, file_name)
         file_name = os.path.join(file_save_path, file_name)
     else:
-        file_name = getattr(media_obj, "file_name", None)
-        caption = getattr(message, "caption", None)
+        file_name = _media_file_name(media_obj)
+        caption = _message_caption(message)
+        grouped_id = _message_grouped_id(message)
 
         file_name_suffix = ".unknown"
         if not file_name:
-            file_name_suffix = get_extension(
-                media_obj.file_id, getattr(media_obj, "mime_type", "")
-            )
+            file_name_suffix = get_extension(None, mime)
+            if _type == "photo" and file_name_suffix == ".unknown":
+                file_name_suffix = ".jpg"
         else:
             _, file_name_without_suffix = os.path.split(os.path.normpath(file_name))
             file_name, file_name_suffix = os.path.splitext(file_name_without_suffix)
             if not file_name_suffix:
-                file_name_suffix = get_extension(
-                    media_obj.file_id, getattr(media_obj, "mime_type", "")
-                )
+                file_name_suffix = get_extension(None, mime)
 
         if caption:
             caption = validate_title(caption)
-            app.set_caption_name(chat_id, message.media_group_id, caption)
+            app.set_caption_name(chat_id, grouped_id, caption)
             app.set_caption_entities(
-                chat_id, message.media_group_id, message.caption_entities
+                chat_id, grouped_id, _message_caption_entities(message)
             )
         else:
-            caption = app.get_caption_name(chat_id, message.media_group_id)
+            caption = app.get_caption_name(chat_id, grouped_id)
 
-        if not file_name and message.photo:
-            file_name = f"{message.photo.file_unique_id}"
+        if not file_name and getattr(message, "photo", None):
+            photo = message.photo
+            file_name = f"{getattr(photo, 'file_unique_id', None) or getattr(photo, 'id', 'photo')}"
 
         gen_file_name = (
             app.get_file_name(message.id, file_name, caption) + file_name_suffix
@@ -321,9 +530,6 @@ async def _reset_task_for_retry(node, message):
     from hermes_telegram_downloader.module.download_stat import (
         delete_download_result_entry as _ddre,
     )
-    from hermes_telegram_downloader.module.pyrogram_extension import (
-        remove_download_cache,
-    )
 
     # 清理 download_cache，防止 record_download_status 装饰器短路返回 Downloading
     # Cache 对象没有 .pop()，用 remove_download_cache 操作 .store 内部 dict
@@ -343,9 +549,9 @@ async def _reset_task_for_retry(node, message):
     node.initial_progress_reported = False
 
 
-async def add_download_task(message: pyrogram.types.Message, node: TaskNode):
+async def add_download_task(message, node: TaskNode):
     """Add Download task"""
-    if message.empty:
+    if _is_empty_message(message):
         return False
     if queue is None:
         logger.error(
@@ -361,7 +567,7 @@ async def add_download_task(message: pyrogram.types.Message, node: TaskNode):
     return True
 
 
-async def save_msg_to_file(app, chat_id: int | str, message: pyrogram.types.Message):
+async def save_msg_to_file(app, chat_id: int | str, message):
     """Write message text into file"""
     dirname = validate_title(
         message.chat.title if message.chat and message.chat.title else str(chat_id)
@@ -381,9 +587,7 @@ async def save_msg_to_file(app, chat_id: int | str, message: pyrogram.types.Mess
     return DownloadStatus.SuccessDownload, file_name
 
 
-async def download_task(
-    client: pyrogram.Client, message: pyrogram.types.Message, node: TaskNode
-):
+async def download_task(client, message, node: TaskNode):
     """Download and Forward media"""
     download_status, file_name, error_message = await download_media(
         client, message, app.media_types, app.file_formats, node
@@ -451,15 +655,22 @@ async def download_task(
         )
 
         _ddre(node.chat_id, message.id if message else message_id)
-    await upload_telegram_chat(
-        client,
-        node.upload_user if node.upload_user else client,
-        app,
-        node,
-        message,
-        download_status,
-        file_name,
-    )
+    try:
+        from hermes_telegram_downloader.module.pyrogram_extension import (
+            upload_telegram_chat,
+        )
+
+        await upload_telegram_chat(
+            client,
+            node.upload_user if node.upload_user else client,
+            app,
+            node,
+            message,
+            download_status,
+            file_name,
+        )
+    except ImportError:
+        pass
     if (
         not node.upload_telegram_chat_id
         and download_status is DownloadStatus.SuccessDownload
@@ -471,15 +682,24 @@ async def download_task(
             file_name, update_cloud_upload_stat, (node, message.id, ui_file_name)
         ):
             node.upload_success_count += 1
-    await report_bot_download_status(node.bot, node, download_status, file_size)
-    # Send final status with full stats immediately for single downloads
-    if node.bot and node.is_finish() and not node.is_stop_transmission:
+    try:
         from hermes_telegram_downloader.module.pyrogram_extension import (
-            report_bot_status,
+            report_bot_download_status,
         )
 
+        await report_bot_download_status(node.bot, node, download_status, file_size)
+    except ImportError:
+        pass
+    # Send final status with full stats immediately for single downloads
+    if node.bot and node.is_finish() and not node.is_stop_transmission:
         try:
+            from hermes_telegram_downloader.module.pyrogram_extension import (
+                report_bot_status,
+            )
+
             await report_bot_status(node.bot, node, immediate_reply=True)
+        except ImportError:
+            pass
         except Exception as e:
             logger.warning(
                 f"Failed to send final bot status for task {node.task_id}: {e}"
@@ -496,8 +716,8 @@ async def download_task(
 
 @record_download_status
 async def download_media(
-    client: pyrogram.client.Client,
-    message: pyrogram.types.Message,
+    client,
+    message,
     media_types: list[str],
     file_formats: dict,
     node: TaskNode,
@@ -526,13 +746,13 @@ async def download_media(
             set_chat_title(message.chat.id, chat_title)
     try:
         for _type in media_types:
-            _media = getattr(message, _type, None)
+            _media = _message_media_attr(message, _type)
             if _media is None:
                 continue
             file_name, temp_file_name, file_format = await _get_media_meta(
                 node.chat_id, message, _media, _type
             )
-            media_size = getattr(_media, "file_size", 0)
+            media_size = _media_size(_media, message)
             ui_file_name = file_name
             if app.hide_file_name:
                 ui_file_name = f"****{os.path.splitext(file_name)[-1]}"
@@ -590,11 +810,13 @@ async def download_media(
     total_wait = 0
     for retry in range(3):
         try:
-            temp_download_path = await client.download_media(
+            temp_download_path = await download_message_media(
+                client,
                 message,
-                file_name=temp_file_name,
-                progress=update_download_status,
-                progress_args=(message_id, ui_file_name, task_start_time, node, client),
+                temp_file_name,
+                progress_callback=lambda c, t, _n=node, _m=message, _c=client: (
+                    update_download_status(c, t, _n, _m, _c)
+                ),
             )
             if temp_download_path and isinstance(temp_download_path, str):
                 _check_download_finish(media_size, temp_download_path, ui_file_name)
@@ -638,175 +860,164 @@ async def download_media(
                     )
                     if error_message:
                         error_message = f"{error_message}（重试3次后失败）"
-        except pyrogram.errors.exceptions.bad_request_400.BadRequest:
-            _cleanup_temp_file(temp_file_name)
-            logger.warning(
-                f"Message[{message.id}]: {_t('file reference expired, refetching')}..."
-            )
-            error_message = "文件引用过期"
-            _client_conn_errors["count"] += 1
-            if await _maybe_reconnect_client():
-                error_message = "文件引用过期（触发客户端重连）"
-            await asyncio.sleep(RETRY_TIME_OUT)
-            message = await fetch_message(client, message)
-            if message is None:
-                logger.error(
-                    f"Message[{message_id}] {ui_file_name}: fetch_message returned None (file ref expired), message may be deleted"
-                )
-                error_message = "消息不存在或已被删除（文件引用过期）"
-                break
-            if _check_timeout(retry, message.id):
-                logger.error(
-                    f"Message[{message.id}]: {_t('file reference expired for 3 retries, download skipped.')}"
-                )
-                error_message = "文件引用过期（重试3次后失败）"
-        except pyrogram.errors.exceptions.flood_420.FloodWait as wait_err:
-            _cleanup_temp_file(temp_file_name)
-            # 累计 FloodWait 超过600 秒则不再等待
-            total_wait += wait_err.value
-            if total_wait > 600:
-                logger.error(
-                    f"Message[{message.id}]: {_t('FloodWait total timeout exceeded, download skipped.')}"
-                )
-                error_message = f"频率限制总超时，累计等待{total_wait}秒"
-                break
-            # Set unified cooldown so edit_message and pending consumer pause too
-            from hermes_telegram_downloader.module.pyrogram_extension import (
-                _unified_flood_wait,
-            )
-
-            _unified_flood_wait["until"] = time.time() + wait_err.value + 5
-            _unified_flood_wait["reason"] = (
-                f"download_media FloodWait {wait_err.value}s (msg {message.id})"
-            )
-            # First FloodWait for this file: notify user so they know progress is paused
-            if (
-                total_wait == wait_err.value
-                and node
-                and node.bot
-                and getattr(node, "from_user_id", "")
-            ):
-                try:
-                    notify_text = (
-                        "⏳ 下载遇到 TG 限速\n"
-                        f"任务: {getattr(node, 'task_id_display', str(node.task_id))}\n"
-                        f"文件: {ui_file_name}\n"
-                        f"需等待 {wait_err.value} 秒后自动重试"
-                    )
-                    await node.bot.send_message(int(node.from_user_id), notify_text)
-                except Exception:
-                    pass
-            await asyncio.sleep(wait_err.value)
-            logger.info(
-                "Message[{}]: FlowWait {}s, waiting (total={}s)",
-                message.id,
-                wait_err.value,
-                total_wait,
-            )
-            error_message = f"频率限制，等待{wait_err.value}秒"
-            _check_timeout(retry, message.id)
-            # Notify user that download has resumed after FloodWait
-            if node and node.bot and getattr(node, "from_user_id", ""):
-                try:
-                    resume_text = (
-                        "✅ 限速恢复，继续下载\n"
-                        f"任务: {getattr(node, 'task_id_display', str(node.task_id))}\n"
-                        f"文件: {ui_file_name}"
-                    )
-                    await node.bot.send_message(int(node.from_user_id), resume_text)
-                except Exception:
-                    pass
-        except TypeError:
-            _cleanup_temp_file(temp_file_name)
-            logger.warning(
-                f"{_t('Timeout Error occurred when downloading Message')}[{message.id}], "
-                f"{_t('retrying after')} {RETRY_TIME_OUT} {_t('seconds')}"
-            )
-            error_message = "下载超时"
-            await asyncio.sleep(RETRY_TIME_OUT)
-            if _check_timeout(retry, message.id):
-                logger.error(
-                    f"Message[{message.id}]: {_t('Timing out after 3 reties, download skipped.')}"
-                )
-                error_message = "下载超时（重试3次后失败）"
-        except TimeoutError as e:
-            # TG 静默限速：连接超时，没有显式 FloodWait 错误码
-            # 注意：TimeoutError 是 OSError 子类，必须放在 except OSError 之前
-            _cleanup_temp_file(temp_file_name)
-            # 递增退避：第1次60s，第2次120s，第3次300s
-            backoff = [60, 120, 300][min(retry, 2)]
-            from hermes_telegram_downloader.module.pyrogram_extension import (
-                _unified_flood_wait,
-            )
-
-            _unified_flood_wait["until"] = time.time() + backoff + 5
-            _unified_flood_wait["reason"] = f"连接超时疑似限速 (msg {message.id})"
-            _client_conn_errors["count"] += 1
-            if await _maybe_reconnect_client():
-                backoff = 5  # Short backoff after reconnect
-            # 第一次超时就通知用户
-            if retry == 0 and node and node.bot and getattr(node, "from_user_id", ""):
-                try:
-                    notify_text = (
-                        "⏸️ TG 连接超时，疑似限速\n"
-                        f"任务: {getattr(node, 'task_id_display', str(node.task_id))}\n"
-                        f"文件: {ui_file_name}\n"
-                        f"暂停 {backoff} 秒后自动重试\n"
-                        f"原因: Request timed out (非FloodWait)"
-                    )
-                    await node.bot.send_message(int(node.from_user_id), notify_text)
-                except Exception:
-                    pass
-            await asyncio.sleep(backoff)
-            # 刷新消息引用（可能已过期），用 try-except 防止二次超时
-            try:
-                message = await fetch_message(client, message)
-            except Exception as fetch_err:
+        except Exception as err:
+            if is_file_ref_expired(err):
+                _cleanup_temp_file(temp_file_name)
                 logger.warning(
-                    f"Message[{message.id}]: fetch_message 也超时: {fetch_err}"
+                    f"Message[{message.id}]: {_t('file reference expired, refetching')}..."
                 )
-            error_message = f"连接超时疑似限速（等待{backoff}秒后重试）"
-        except OSError as e:
-            # 连接级错误（网络断连、代理断开等）
-            # TimeoutError 已被上面的 handler 拦截，这里处理非超时类连接错误
-            # 但如果异常信息包含 timeout 关键字，也按限速处理（防御性）
-            _cleanup_temp_file(temp_file_name)
-            err_str = str(e).lower()
-            if "timed out" in err_str or "timeout" in err_str:
-                # 看起来像超时，用长退避 + 设 cooldown
+                error_message = "文件引用过期"
+                _client_conn_errors["count"] += 1
+                if await _maybe_reconnect_client():
+                    error_message = "文件引用过期（触发客户端重连）"
+                await asyncio.sleep(RETRY_TIME_OUT)
+                message = await fetch_message(client, message)
+                if message is None:
+                    logger.error(
+                        f"Message[{message_id}] {ui_file_name}: fetch_message returned None (file ref expired), message may be deleted"
+                    )
+                    error_message = "消息不存在或已被删除（文件引用过期）"
+                    break
+                if _check_timeout(retry, message.id):
+                    logger.error(
+                        f"Message[{message.id}]: {_t('file reference expired for 3 retries, download skipped.')}"
+                    )
+                    error_message = "文件引用过期（重试3次后失败）"
+                continue
+            if is_flood_wait(err):
+                _cleanup_temp_file(temp_file_name)
+                wait_s = wait_seconds_from_flood(err)
+                # 累计 FloodWait 超过600 秒则不再等待
+                total_wait += wait_s
+                if total_wait > 600:
+                    logger.error(
+                        f"Message[{message.id}]: {_t('FloodWait total timeout exceeded, download skipped.')}"
+                    )
+                    error_message = f"频率限制总超时，累计等待{total_wait}秒"
+                    break
+                _unified_flood_wait["until"] = time.time() + wait_s + 5
+                _unified_flood_wait["reason"] = (
+                    f"download_media FloodWait {wait_s}s (msg {message.id})"
+                )
+                if (
+                    total_wait == wait_s
+                    and node
+                    and node.bot
+                    and getattr(node, "from_user_id", "")
+                ):
+                    try:
+                        notify_text = (
+                            "⏳ 下载遇到 TG 限速\n"
+                            f"任务: {getattr(node, 'task_id_display', str(node.task_id))}\n"
+                            f"文件: {ui_file_name}\n"
+                            f"需等待 {wait_s} 秒后自动重试"
+                        )
+                        await node.bot.send_message(int(node.from_user_id), notify_text)
+                    except Exception:
+                        pass
+                await asyncio.sleep(wait_s)
+                logger.info(
+                    "Message[{}]: FlowWait {}s, waiting (total={}s)",
+                    message.id,
+                    wait_s,
+                    total_wait,
+                )
+                error_message = f"频率限制，等待{wait_s}秒"
+                _check_timeout(retry, message.id)
+                if node and node.bot and getattr(node, "from_user_id", ""):
+                    try:
+                        resume_text = (
+                            "✅ 限速恢复，继续下载\n"
+                            f"任务: {getattr(node, 'task_id_display', str(node.task_id))}\n"
+                            f"文件: {ui_file_name}"
+                        )
+                        await node.bot.send_message(int(node.from_user_id), resume_text)
+                    except Exception:
+                        pass
+                continue
+            if isinstance(err, TypeError):
+                _cleanup_temp_file(temp_file_name)
+                logger.warning(
+                    f"{_t('Timeout Error occurred when downloading Message')}[{message.id}], "
+                    f"{_t('retrying after')} {RETRY_TIME_OUT} {_t('seconds')}"
+                )
+                error_message = "下载超时"
+                await asyncio.sleep(RETRY_TIME_OUT)
+                if _check_timeout(retry, message.id):
+                    logger.error(
+                        f"Message[{message.id}]: {_t('Timing out after 3 reties, download skipped.')}"
+                    )
+                    error_message = "下载超时（重试3次后失败）"
+                continue
+            if isinstance(err, TimeoutError):
+                _cleanup_temp_file(temp_file_name)
                 backoff = [60, 120, 300][min(retry, 2)]
                 _unified_flood_wait["until"] = time.time() + backoff + 5
                 _unified_flood_wait["reason"] = f"连接超时疑似限速 (msg {message.id})"
-            else:
-                # 普通连接错误，保持原有指数退避：10s, 20s, 40s
-                backoff = 10 * (2**retry)
-            _client_conn_errors["count"] += 1
-            if await _maybe_reconnect_client():
-                backoff = 5  # Short backoff after reconnect
-            logger.warning(
-                f"Message[{message.id}] {ui_file_name}: connection error ({type(e).__name__}), "
-                f"retry {retry + 1}/3 after {backoff}s backoff"
-            )
-            error_message = f"连接错误: {str(e)[:80]}"
-            await asyncio.sleep(backoff)
-            message = await fetch_message(client, message)
-            if message is None:
-                logger.error(
-                    f"Message[{message_id}] {ui_file_name}: fetch_message returned None after connection error"
+                _client_conn_errors["count"] += 1
+                if await _maybe_reconnect_client():
+                    backoff = 5
+                if (
+                    retry == 0
+                    and node
+                    and node.bot
+                    and getattr(node, "from_user_id", "")
+                ):
+                    try:
+                        notify_text = (
+                            "⏸️ TG 连接超时，疑似限速\n"
+                            f"任务: {getattr(node, 'task_id_display', str(node.task_id))}\n"
+                            f"文件: {ui_file_name}\n"
+                            f"暂停 {backoff} 秒后自动重试\n"
+                            f"原因: Request timed out (非FloodWait)"
+                        )
+                        await node.bot.send_message(int(node.from_user_id), notify_text)
+                    except Exception:
+                        pass
+                await asyncio.sleep(backoff)
+                try:
+                    message = await fetch_message(client, message)
+                except Exception as fetch_err:
+                    logger.warning(
+                        f"Message[{message.id}]: fetch_message 也超时: {fetch_err}"
+                    )
+                error_message = f"连接超时疑似限速（等待{backoff}秒后重试）"
+                continue
+            if isinstance(err, OSError):
+                _cleanup_temp_file(temp_file_name)
+                err_str = str(err).lower()
+                if "timed out" in err_str or "timeout" in err_str:
+                    backoff = [60, 120, 300][min(retry, 2)]
+                    _unified_flood_wait["until"] = time.time() + backoff + 5
+                    _unified_flood_wait["reason"] = (
+                        f"连接超时疑似限速 (msg {message.id})"
+                    )
+                else:
+                    backoff = 10 * (2**retry)
+                _client_conn_errors["count"] += 1
+                if await _maybe_reconnect_client():
+                    backoff = 5
+                logger.warning(
+                    f"Message[{message.id}] {ui_file_name}: connection error ({type(err).__name__}), "
+                    f"retry {retry + 1}/3 after {backoff}s backoff"
                 )
-                error_message = "连接错误后消息不可用"
-                break
-            if _check_timeout(retry, message.id):
-                logger.error(
-                    f"Message[{message.id}] {ui_file_name}: connection failed after 3 retries"
-                )
-                error_message = f"连接错误（重试3次后失败）"
-        except Exception as e:
+                error_message = f"连接错误: {str(err)[:80]}"
+                await asyncio.sleep(backoff)
+                message = await fetch_message(client, message)
+                if message is None:
+                    logger.error(
+                        f"Message[{message_id}] {ui_file_name}: fetch_message returned None after connection error"
+                    )
+                    error_message = "连接错误后消息不可用"
+                    break
+                if _check_timeout(retry, message.id):
+                    logger.error(
+                        f"Message[{message.id}] {ui_file_name}: connection failed after 3 retries"
+                    )
+                    error_message = "连接错误（重试3次后失败）"
+                continue
             _cleanup_temp_file(temp_file_name)
-            error_str = str(e)
-            # "This message doesn't contain any downloadable media" happens when
-            # the file reference is stale. Refresh the message and retry instead
-            # of breaking immediately.
+            error_str = str(err)
             if "doesn't contain any downloadable media" in error_str:
                 logger.warning(
                     f"Message[{message.id}] {ui_file_name}: stale file reference "
@@ -830,7 +1041,7 @@ async def download_media(
                 continue
             logger.error(
                 f"Message[{message.id}]: "
-                f"{_t('could not be downloaded due to following exception')}:\n[{e}].",
+                f"{_t('could not be downloaded due to following exception')}:\n[{err}].",
                 exc_info=True,
             )
             error_message = f"下载异常: {error_str[:100]}"
@@ -898,7 +1109,7 @@ def _check_config() -> bool:
     return True
 
 
-async def worker(client: pyrogram.client.Client):
+async def worker(client):
     """Work for download task
 
     进度心跳机制：download_task 在独立 Task 中执行，watchdog 每 30s 检查
@@ -928,9 +1139,12 @@ async def worker(client: pyrogram.client.Client):
             )
             # Mark task as actively downloading (no longer pending/in-queue)
             if node.task_id:
-                from hermes_telegram_downloader.module.bot import _bot
+                try:
+                    from hermes_telegram_downloader.module.bot import _bot
 
-                _bot._in_queue.discard(node.task_id)
+                    _bot._in_queue.discard(node.task_id)
+                except ImportError:
+                    pass
                 update_download_state(node.task_id, "downloading")
             if node.is_stop_transmission:
                 continue
@@ -943,10 +1157,15 @@ async def worker(client: pyrogram.client.Client):
             dl_task_start = time.time()
             _MAX_TASK_RUNTIME = 300  # 5分钟最大运行时间（心跳从未设置时的后备超时）
             watchdog_triggered = False
+            user_stopped = False
             try:
                 while not dl_task.done():
-                    await asyncio.sleep(30)  # 每 30s 检查一次心跳
+                    await asyncio.wait({dl_task}, timeout=1.0)
                     if dl_task.done():
+                        break
+                    if node.is_stop_transmission:
+                        dl_task.cancel()
+                        user_stopped = True
                         break
                     age = get_task_heartbeat_age(composite_key)
                     runtime = time.time() - dl_task_start
@@ -967,7 +1186,11 @@ async def worker(client: pyrogram.client.Client):
                 _watchdog_retry_count.pop(node.task_id, None)
             except asyncio.CancelledError:
                 # dl_task 被 cancel 时 await 会抛 CancelledError
-                if watchdog_triggered:
+                if user_stopped or node.is_stop_transmission:
+                    logger.info(
+                        f"Worker: task {node.task_id_display} cancelled by stop_transmission"
+                    )
+                elif watchdog_triggered:
                     logger.warning(
                         f"Worker: task {node.task_id_display} cancelled by heartbeat watchdog"
                     )
@@ -1042,16 +1265,14 @@ async def worker(client: pyrogram.client.Client):
 
 
 async def download_chat_task(
-    client: pyrogram.Client, chat_download_config: ChatDownloadConfig, node: TaskNode
+    client, chat_download_config: ChatDownloadConfig, node: TaskNode
 ):
     """Download all task"""
-    messages_iter = get_chat_history_v2(
+    messages_iter = iter_chat_messages(
         client,
         node.chat_id,
-        limit=node.limit,
-        max_id=node.end_offset_id,
-        offset_id=chat_download_config.last_read_message_id,
-        reverse=True,
+        min_id=chat_download_config.last_read_message_id,
+        max_id=node.end_offset_id or 0,
     )
     chat_download_config.node = node
     if chat_download_config.ids_to_retry:
@@ -1059,7 +1280,7 @@ async def download_chat_task(
         try:
             skipped_messages: list = await asyncio.wait_for(
                 client.get_messages(
-                    chat_id=node.chat_id, message_ids=chat_download_config.ids_to_retry
+                    node.chat_id, ids=chat_download_config.ids_to_retry
                 ),
                 timeout=120,  # 批量获取加 120s 超时，防止半死 TCP 上 hang 15分钟
             )
@@ -1069,6 +1290,10 @@ async def download_chat_task(
                 f"retry messages in chat {node.chat_id}, skipping retry this run"
             )
             skipped_messages = []
+        if skipped_messages is None:
+            skipped_messages = []
+        elif not isinstance(skipped_messages, list):
+            skipped_messages = [skipped_messages]
         for message in skipped_messages:
             await add_download_task(message, node)
     async for message in messages_iter:
@@ -1083,15 +1308,16 @@ async def download_chat_task(
             if chat_title:
                 set_chat_title(message.chat.id, chat_title)
         meta_data = MetaData()
-        caption = message.caption
+        caption = _message_caption(message)
+        grouped_id = _message_grouped_id(message)
         if caption:
             caption = validate_title(caption)
-            app.set_caption_name(node.chat_id, message.media_group_id, caption)
+            app.set_caption_name(node.chat_id, grouped_id, caption)
             app.set_caption_entities(
-                node.chat_id, message.media_group_id, message.caption_entities
+                node.chat_id, grouped_id, _message_caption_entities(message)
             )
         else:
-            caption = app.get_caption_name(node.chat_id, message.media_group_id)
+            caption = app.get_caption_name(node.chat_id, grouped_id)
         set_meta_data(meta_data, message, caption)
         if app.need_skip_message(chat_download_config, message.id):
             continue
@@ -1100,15 +1326,22 @@ async def download_chat_task(
                 await add_download_task(message, node)
         else:
             node.download_status[message.id] = DownloadStatus.SkipDownload
-            if message.media_group_id:
-                await upload_telegram_chat(
-                    client,
-                    node.upload_user,
-                    app,
-                    node,
-                    message,
-                    DownloadStatus.SkipDownload,
-                )
+            if grouped_id:
+                try:
+                    from hermes_telegram_downloader.module.pyrogram_extension import (
+                        upload_telegram_chat,
+                    )
+
+                    await upload_telegram_chat(
+                        client,
+                        node.upload_user,
+                        app,
+                        node,
+                        message,
+                        DownloadStatus.SkipDownload,
+                    )
+                except ImportError:
+                    pass
         # Update task progress for crash recovery
         update_task_progress(node.task_id, message.id)
         # 降低 last_read_message_id 更新频率：每 200 条消息持久化一次
@@ -1125,7 +1358,7 @@ async def download_chat_task(
     app.update_config(immediate=True)
 
 
-async def download_all_chat(client: pyrogram.Client):
+async def download_all_chat(client):
     """Download All chat"""
     from hermes_telegram_downloader.module.task_store import save_task as _save_task
 
@@ -1170,25 +1403,17 @@ def _exec_loop():
     app.loop.run_until_complete(run_until_all_task_finish())
 
 
-async def start_server(client: pyrogram.Client):
+async def start_server(client):
     """Start the server"""
     _main_client_ref["client"] = client
     await client.start()
 
 
 async def _reconnect_client():
-    """Force-reconnect the main Pyrogram client to recover from half-dead TCP sessions.
+    """Force-reconnect the main Telethon client to recover from half-dead TCP sessions.
 
-    Mirrors the manual fix of toggling the v2rayA node: client.stop() kills
-    the stale TCP connection, client.start() builds a fresh one using the
-    existing session file (no re-auth needed).
-
-    所有操作都加 asyncio.wait_for 超时，防止 stop()/start() 在半死 TCP 上 hang
-    15分钟（TCP.TIMEOUT=900s）导致 _client_reconnecting["active"] 永久锁死。
-
-    SQLite 锁处理：stop() 超时后 Pyrogram 的 session DB 可能持有 EXCLUSIVE 锁
-    未释放，导致 start() 报 "database is locked"。需要在 stop 超时后手动
-    清理 SQLite journal 文件 + 重置 Pyrogram 内部 session 引用。
+    disconnect() kills the stale TCP connection, connect()/start() builds a fresh
+    one using the existing session file (no re-auth needed if still authorized).
     """
     client = _main_client_ref["client"]
     if client is None:
@@ -1197,112 +1422,67 @@ async def _reconnect_client():
 
     _client_reconnecting["active"] = True
     try:
-        # stop() 加 30s 超时 — 半死 TCP 上 stop() 会等 TCP.TIMEOUT(900s)
-        logger.warning("Client auto-reconnect: stop()...")
+        logger.warning("Client auto-reconnect: disconnect()...")
         try:
-            await asyncio.wait_for(client.stop(), timeout=30)
+            await asyncio.wait_for(client.disconnect(), timeout=30)
         except TimeoutError:
-            logger.error("client.stop() timed out after 30s, force disconnect")
-            # stop() = terminate() + disconnect()，超时说明某一步 hang 了
-            # 手动清理 Pyrogram 内部状态，否则 start() 会报 "already connected"
-            try:
-                await client.disconnect()
-            except Exception:
-                pass
-            # 强制重置连接标志 — disconnect() 可能因 is_initialized=True 而失败，
-            # 但我们需要让 start()→connect() 能重新建立连接
-            client.is_connected = False
-            # 关键：stop() 超时后 SQLite EXCLUSIVE 锁可能未释放，
-            # 导致后续 start() 报 "database is locked"。
-            # 手动清理：1) 删除 journal 文件 2) 重置 session 引用
+            logger.error("client.disconnect() timed out after 30s, force disconnect")
             _force_release_session_lock(client)
         except Exception as e:
-            logger.warning(f"client.stop() during reconnect failed (continuing): {e}")
-            client.is_connected = False
+            logger.warning(
+                f"client.disconnect() during reconnect failed (continuing): {e}"
+            )
             _force_release_session_lock(client)
 
-        # start() 加 30s 超时 — 防止 start() 在未清理干净的 session 上 hang
-        logger.warning("Client auto-reconnect: start()...")
+        logger.warning("Client auto-reconnect: connect()...")
         try:
-            await asyncio.wait_for(client.start(), timeout=30)
+            await asyncio.wait_for(client.connect(), timeout=30)
+            if not await client.is_user_authorized():
+                await asyncio.wait_for(client.start(), timeout=30)
             logger.success(
                 "Client reconnected successfully — fresh TCP session established"
             )
             _client_conn_errors["count"] = 0
             return True
         except TimeoutError:
-            logger.error("client.start() timed out after 30s, reconnect failed")
+            logger.error("client.connect() timed out after 30s, reconnect failed")
             return False
         except Exception as e:
             error_str = str(e)
             if "database is locked" in error_str:
-                # 二次锁清理后重试一次
                 logger.warning(
-                    f"client.start() failed with database is locked, forcing release and retrying..."
+                    f"client.connect() failed with database is locked, forcing release and retrying..."
                 )
                 _force_release_session_lock(client)
                 try:
-                    await asyncio.wait_for(client.start(), timeout=30)
+                    await asyncio.wait_for(client.connect(), timeout=30)
+                    if not await client.is_user_authorized():
+                        await asyncio.wait_for(client.start(), timeout=30)
                     logger.success(
                         "Client reconnected successfully on retry — fresh TCP session established"
                     )
                     _client_conn_errors["count"] = 0
                     return True
                 except Exception as e2:
-                    logger.error(f"client.start() retry also failed: {e2}")
-            logger.error(f"client.start() during reconnect failed: {e}")
+                    logger.error(f"client.connect() retry also failed: {e2}")
+            logger.error(f"client.connect() during reconnect failed: {e}")
             return False
     finally:
         _client_reconnecting["active"] = False
 
 
 def _force_release_session_lock(client):
-    """强制释放 Pyrogram session SQLite 锁。
-
-    stop() 超时被 cancel 时，Pyrogram 内部的 SQLite transaction 不会被回滚，
-    EXCLUSIVE 锁残留在 SQLite 连接上。清理方法：
-    1. 关闭 storage 的 SQLite 连接（client.storage.conn）
-    2. 关闭 MTProto session 的 TCP 连接（client.session）
-    3. 删除 -journal 文件（SQLite WAL/journal 残留）
-    4. 重置 client 内部状态，强制 start() 重新打开 DB
-    """
-    import os
-
+    """强制释放 Telethon session SQLite 锁文件。"""
     try:
-        # 1. 关闭 storage 的 SQLite 连接 — 这才是持有锁的对象
-        storage = getattr(client, "storage", None)
-        if storage and getattr(storage, "conn", None):
-            try:
-                storage.conn.close()
-                logger.info("Closed storage SQLite connection")
-            except Exception:
-                pass
-            storage.conn = None
-        # 2. 关闭 MTProto session 的 TCP 连接
-        session = getattr(client, "session", None)
-        if session:
-            try:
-                # Session.stop() 会关 connection，但可能 hang，用 disconnect
-                conn = getattr(session, "connection", None)
-                if conn:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            client.session = None
-        # 3. 删除 journal 文件
-        session_path = os.path.join(app.session_file_path, "media_downloader.session")
+        session_path = os.path.join(
+            app.session_file_path, USER_SESSION_NAME + ".session"
+        )
         for suffix in ["-journal", "-wal", "-shm"]:
             f = session_path + suffix
             if os.path.exists(f):
                 os.remove(f)
                 logger.info(f"Removed stale SQLite file: {f}")
-        # 4. 重置 client 内部状态
-        client.is_initialized = False
-        client.is_connected = False
-        logger.info("Reset client session/storage/flags for clean restart")
+        logger.info("Reset client session lock files for clean restart")
     except Exception as e:
         logger.warning(f"Failed to release session lock: {e}")
 
@@ -1335,7 +1515,13 @@ async def _maybe_reconnect_client(force=False):
         )
         # In cooldown — don't reconnect, but check if client is still connected
         client = _main_client_ref.get("client")
-        if client and getattr(client, "is_connected", False):
+        flag = getattr(client, "is_connected", False) if client else False
+        if callable(flag):
+            try:
+                flag = flag()
+            except Exception:
+                flag = False
+        if client and flag:
             return True
         return False
 
@@ -1352,98 +1538,19 @@ async def _maybe_reconnect_client(force=False):
     return True
 
 
-async def stop_server(client: pyrogram.Client):
+async def stop_server(client):
     """Stop the server"""
-    await client.stop()
+    await client.disconnect()
 
 
 def main():
     """Main function"""
-    # ── Patch A: Increase TCP timeout to 900s (15 min) ──
-    # Pyrogram default TCP.TIMEOUT=10s causes reconnect storms when TG throttles
-    # downloads — each chunk request waits >10s for a response, triggering
-    # connection teardown + MTProto re-handshake, producing massive upload traffic.
-    # Xray proxy has no idle timeout, so 900s is safe.
-    from pyrogram.connection.transport.tcp import TCP as _TCP
-
-    _TCP.TIMEOUT = 900
-    logger.info(f"Patched TCP.TIMEOUT: 10s -> {_TCP.TIMEOUT}s")
-
-    # ── Patch B: Swallow ChannelInvalid in Message._parse ──
-    # When a monitored channel has messages that reply to messages in another
-    # channel the user account can't access, Pyrogram's Message._parse tries
-    # to fetch reply_to_message via client.get_messages → resolve_peer →
-    # channels.GetChannels, which throws ChannelInvalid. This kills the entire
-    # message_parser call in the dispatcher, so the update is silently dropped
-    # and our NewMessage handler never fires — the download never starts.
-    # Fix: wrap Message._parse so that on ChannelInvalid, we retry with a
-    # client wrapper that returns None for inaccessible reply targets.
-    from pyrogram.types import Message as _PMsg
-
-    try:
-        from pyrogram.errors import ChannelInvalid as _ChannelInvalidErr
-    except ImportError:
-        # Fallback for forks where ChannelInvalid is under subpackage
-        from pyrogram.errors.exceptions.bad_request_400 import (
-            ChannelInvalid as _ChannelInvalidErr,
-        )
-
-    _orig_msg_parse = _PMsg._parse
-
-    class _SafeReplyClient:
-        """Pass-through client that swallows ChannelInvalid in reply fetches."""
-
-        def __init__(self, client):
-            self._client = client
-
-        async def get_messages(self, *a, **kw):
-            try:
-                return await self._client.get_messages(*a, **kw)
-            except _ChannelInvalidErr:
-                return None
-
-        async def get_stories(self, *a, **kw):
-            try:
-                return await self._client.get_stories(*a, **kw)
-            except _ChannelInvalidErr:
-                return None
-
-        async def get_forum_topics_by_id(self, *a, **kw):
-            try:
-                return await self._client.get_forum_topics_by_id(*a, **kw)
-            except _ChannelInvalidErr:
-                return None
-
-        def __getattr__(self, name):
-            return getattr(self._client, name)
-
-    async def _safe_msg_parse(client, *args, **kwargs):
-        try:
-            return await _orig_msg_parse(client, *args, **kwargs)
-        except _ChannelInvalidErr:
-            logger.warning(
-                "ChannelInvalid in Message._parse — retrying without reply_to_message"
-            )
-            return await _orig_msg_parse(_SafeReplyClient(client), *args, **kwargs)
-
-    _PMsg._parse = _safe_msg_parse
-    logger.info("Patched Message._parse: ChannelInvalid no longer drops updates")
-
     tasks = []
-    client = HookClient(
-        "media_downloader",
-        api_id=app.api_id,
-        api_hash=app.api_hash,
-        proxy=app.proxy,
-        workdir=app.session_file_path,
-        start_timeout=app.start_timeout,
-        no_updates=False,
-    )
+    client = create_user_client(app)
     try:
         app.pre_run()
         _cleanup_stale_temp_files()
         init_web(app)
-        set_max_concurrent_transmissions(client, app.max_concurrent_transmissions)
         app.loop.run_until_complete(start_server(client))
         # Create queue AFTER event loop is running to ensure it binds to the
         # correct loop. Creating asyncio.Queue at module import time (before
@@ -1462,9 +1569,7 @@ def main():
         for _ in range(_MAX_WORKERS):
             tasks.append(app.loop.create_task(worker(client)))
         if app.bot_token:
-            app.loop.run_until_complete(
-                start_download_bot(app, client, add_download_task, download_chat_task)
-            )
+            logger.warning("Bot 尚未迁移到 Telethon，跳过 start_download_bot")
         _exec_loop()
     except KeyboardInterrupt:
         logger.info(_t("KeyboardInterrupt"))
@@ -1473,8 +1578,6 @@ def main():
     finally:
         app.is_running = False
         save_downloads()
-        if app.bot_token:
-            app.loop.run_until_complete(stop_download_bot())
         app.loop.run_until_complete(stop_server(client))
         for task in tasks:
             task.cancel()

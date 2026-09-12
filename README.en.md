@@ -222,6 +222,8 @@ cp config.yaml.example config.yaml
 uv run media-downloader
 ```
 
+The first run creates `sessions/media_downloader_telethon.session` and requires Telegram login (verification code). Old Pyrogram `.session` files are not read or overwritten.
+
 ### Local Dev Mode
 
 ```bash

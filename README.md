@@ -222,6 +222,8 @@ cp config.yaml.example config.yaml
 uv run media-downloader
 ```
 
+首次运行会创建 `sessions/media_downloader_telethon.session`，需完成 Telegram 验证码登录。旧的 Pyrogram `.session` 文件不会被读取或覆盖。
+
 ### 本地开发模式
 
 ```bash

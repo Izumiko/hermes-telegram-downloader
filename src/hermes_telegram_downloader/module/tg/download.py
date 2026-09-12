@@ -1,7 +1,9 @@
 from hermes_telegram_downloader.module.tg.errors import is_file_ref_expired
 
 
-async def download_message_media(client, message, file_path, progress_callback=None, retries=3):
+async def download_message_media(
+    client, message, file_path, progress_callback=None, retries=3
+):
     last_err = None
     for attempt in range(retries):
         try:

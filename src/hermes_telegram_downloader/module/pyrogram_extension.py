@@ -1594,9 +1594,6 @@ async def update_upload_stat(
     """update_upload_status"""
     cur_time = time.time()
 
-    if node.is_stop_transmission:
-        client.stop_transmission()
-
     # TODO(tyh): web control upload stop
 
     if node.upload_stat_dict.get(message_id):
