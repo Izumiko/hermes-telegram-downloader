@@ -21,6 +21,12 @@ dependencies = [
     "requests>=2.32",
 ]
 
+[dependency-groups]
+dev = [
+    "ruff>=0.16",
+    "pytest>=9.0",
+]
+
 [project.scripts]
 media-downloader = "hermes_telegram_downloader.media_downloader:cli"
 
@@ -34,19 +40,18 @@ packages = ["src/hermes_telegram_downloader"]
 [tool.hatch.metadata]
 allow-direct-references = true
 
-[dependency-groups]
-dev = [
-    "ruff>=0.8",
-    "pytest>=8.0",
-]
-
 [tool.ruff]
 target-version = "py314"
 src = ["src"]
 
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
 [tool.ruff.lint]
-select = ["F"]
-ignore = ["F401", "F841", "F811", "F541"]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501", "F401", "F841", "F811", "F541"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/hermes_telegram_downloader/media_downloader.py" = ["F821"]

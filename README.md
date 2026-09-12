@@ -208,22 +208,24 @@ docker-compose logs -f
 
 ### 手动安装
 
+需要 [uv](https://docs.astral.sh/uv/) 与 Python 3.14+（uv 会自动管理 Python 版本）：
+
 ```bash
 git clone https://github.com/MangoIsIllegal/hermes-telegram-downloader.git
 cd hermes-telegram-downloader
-pip install -r requirements.txt
+uv sync
 
 cp config.yaml.example config.yaml
 # 编辑 config.yaml...
 
-python media_downloader.py
+uv run media-downloader
 ```
 
 ### 本地开发模式
 
 ```bash
 # 无需 Telegram 账号，Mock 数据启动 WebUI
-python run_local.py
+uv run python run_local.py
 # 访问 http://localhost:5000
 ```
 
@@ -415,7 +417,7 @@ git pull && docker-compose build && docker-compose up -d
 
 | 模块 | 说明 |
 |------|------|
-| `module/task_store.py` | 任务持久化 + 崩溃恢复，JSON 存储，原子写入，线程安全 |
+| `src/hermes_telegram_downloader/module/task_store.py` | 任务持久化 + 崩溃恢复，JSON 存储，原子写入，线程安全 |
 | `run_local.py` | 本地开发模式，Mock 数据，无需 Telegram |
 
 ### 核心改动

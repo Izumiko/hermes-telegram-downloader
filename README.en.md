@@ -208,22 +208,24 @@ docker-compose logs -f
 
 ### Manual Install
 
+Requires [uv](https://docs.astral.sh/uv/) and Python 3.14+ (uv manages the Python version):
+
 ```bash
 git clone https://github.com/MangoIsIllegal/hermes-telegram-downloader.git
 cd hermes-telegram-downloader
-pip install -r requirements.txt
+uv sync
 
 cp config.yaml.example config.yaml
 # Edit config.yaml...
 
-python media_downloader.py
+uv run media-downloader
 ```
 
 ### Local Dev Mode
 
 ```bash
 # No Telegram account needed, mock data for WebUI debugging
-python run_local.py
+uv run python run_local.py
 # Open http://localhost:5000
 ```
 
@@ -415,7 +417,7 @@ Based on [tangyoha/telegram_media_downloader](https://github.com/tangyoha/telegr
 
 | Module | Description |
 |--------|-------------|
-| `module/task_store.py` | Task persistence + crash recovery, JSON storage, atomic writes, thread-safe |
+| `src/hermes_telegram_downloader/module/task_store.py` | Task persistence + crash recovery, JSON storage, atomic writes, thread-safe |
 | `run_local.py` | Local dev mode with mock data, no Telegram needed |
 
 ### Core Changes

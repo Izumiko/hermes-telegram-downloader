@@ -24,13 +24,13 @@ services:
       # 临时文件
       - "./temp:/app/temp"
       # 模块文件覆盖
-      - "./module/download_stat.py:/app/module/download_stat.py"
-      - "./module/web.py:/app/module/web.py"
-      - "./module/templates/index.html:/app/module/templates/index.html"
-      - "./module/static:/app/module/static"
-      - "./module/bot.py:/app/module/bot.py"
-      - "./module/pyrogram_extension.py:/app/module/pyrogram_extension.py"
-      - "./module/task_store.py:/app/module/task_store.py"
-      - "./module/app.py:/app/module/app.py"
-      - "./media_downloader.py:/app/media_downloader.py"
+      - "./src/hermes_telegram_downloader/module/download_stat.py:/app/src/hermes_telegram_downloader/module/download_stat.py"
+      - "./src/hermes_telegram_downloader/module/web.py:/app/src/hermes_telegram_downloader/module/web.py"
+      - "./src/hermes_telegram_downloader/module/templates/index.html:/app/src/hermes_telegram_downloader/module/templates/index.html"
+      - "./src/hermes_telegram_downloader/module/static:/app/src/hermes_telegram_downloader/module/static"
+      - "./src/hermes_telegram_downloader/module/bot.py:/app/src/hermes_telegram_downloader/module/bot.py"
+      - "./src/hermes_telegram_downloader/module/pyrogram_extension.py:/app/src/hermes_telegram_downloader/module/pyrogram_extension.py"
+      - "./src/hermes_telegram_downloader/module/task_store.py:/app/src/hermes_telegram_downloader/module/task_store.py"
+      - "./src/hermes_telegram_downloader/module/app.py:/app/src/hermes_telegram_downloader/module/app.py"
+      - "./src/hermes_telegram_downloader/media_downloader.py:/app/src/hermes_telegram_downloader/media_downloader.py"
     restart: unless-stopped
