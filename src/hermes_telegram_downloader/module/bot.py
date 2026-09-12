@@ -1,17 +1,16 @@
 """Bot for media downloader"""
 
+from __future__ import annotations
+
 import asyncio
 import os
 import time
 from collections.abc import Callable
 from datetime import datetime
 
-import pyrogram
 from loguru import logger
-from pyrogram import types
-from pyrogram.handlers import CallbackQueryHandler, MessageHandler
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from ruamel import yaml
+from telethon import Button, events
 
 from hermes_telegram_downloader import utils
 from hermes_telegram_downloader.module.app import (
@@ -32,20 +31,7 @@ from hermes_telegram_downloader.module.download_stat import (
     delete_task as _delete_download_progress,
 )
 from hermes_telegram_downloader.module.filter import Filter
-from hermes_telegram_downloader.module.get_chat_history_v2 import get_chat_history_v2
 from hermes_telegram_downloader.module.language import Language, _t
-from hermes_telegram_downloader.module.pyrogram_extension import (
-    check_user_permission,
-    get_utf16_length,
-    is_flood_wait_active,
-    parse_link,
-    proc_cache_forward,
-    report_bot_forward_status,
-    report_bot_status,
-    retry,
-    set_meta_data,
-    upload_telegram_chat_message,
-)
 from hermes_telegram_downloader.module.task_store import (
     complete_task,
     get_pending_tasks,
@@ -53,6 +39,17 @@ from hermes_telegram_downloader.module.task_store import (
     save_task,
     update_download_state,
     update_task_progress,
+)
+from hermes_telegram_downloader.module.tg.bot_api import (
+    parse_link,
+    report_bot_status,
+    retry,
+)
+from hermes_telegram_downloader.module.tg.client import create_bot_client
+from hermes_telegram_downloader.module.tg.compat import (
+    BotClientProxy,
+    UserClientProxy,
+    wrap_message,
 )
 from hermes_telegram_downloader.utils.format import replace_date_time, validate_title
 from hermes_telegram_downloader.utils.meta_data import MetaData
@@ -617,6 +614,8 @@ class DownloadBot:
 
     def _register_listen_handler(self):
         """在 user client 上注册 NewMessage handler，实时检测监听频道的新消息"""
+        logger.info("listen_forward 尚未迁移到 Telethon，跳过 handler 注册")
+        return
         if self._listen_handler_ref:
             return  # 已注册
 
@@ -704,68 +703,15 @@ class DownloadBot:
     async def start(
         self,
         app: Application,
-        client: pyrogram.Client,
+        client,
         add_download_task: Callable,
         download_chat_task: Callable,
     ):
         """Start bot"""
-        self.bot = pyrogram.Client(
-            app.application_name + "_bot",
-            api_hash=app.api_hash,
-            api_id=app.api_id,
-            bot_token=app.bot_token,
-            workdir=app.session_file_path,
-            proxy=app.proxy,
-        )
-
-        # Command list
-        commands = [
-            types.BotCommand("help", _t("Help")),
-            types.BotCommand(
-                "get_info", _t("Get group and user info from message link")
-            ),
-            types.BotCommand(
-                "download",
-                _t(
-                    "To download the video, use the method to directly enter /download to view"
-                ),
-            ),
-            types.BotCommand(
-                "forward",
-                _t("Forward video, use the method to directly enter /forward to view"),
-            ),
-            types.BotCommand(
-                "listen_forward",
-                _t(
-                    "Listen forward, use the method to directly enter /listen_forward to view"
-                ),
-            ),
-            types.BotCommand(
-                "add_filter",
-                _t(
-                    "Add download filter, use the method to directly enter /add_filter to view"
-                ),
-            ),
-            types.BotCommand(
-                "add_ad", "Add advertisement filter (keyword to skip on forward)"
-            ),
-            types.BotCommand("remove_ad", "Remove advertisement filter"),
-            types.BotCommand(
-                "add_replace_ad", "Add replace advertisement (message_link keyword)"
-            ),
-            types.BotCommand(
-                "remove_replace_ad",
-                "Remove replace advertisement (message_link keyword)",
-            ),
-            types.BotCommand(
-                "set_ad", "Set group advertisement (message_link advertisement)"
-            ),
-            types.BotCommand("set_language", _t("Set language")),
-            types.BotCommand("stop", _t("Stop bot download or forward")),
-        ]
-
+        self._tg_bot = create_bot_client(app)
+        self.bot = BotClientProxy(self._tg_bot)
+        self.client = UserClientProxy(client)
         self.app = app
-        self.client = client
         self.add_download_task = add_download_task
         self.download_chat_task = download_chat_task
 
@@ -777,7 +723,7 @@ class DownloadBot:
                     self.config = config
                     self.assign_config(self.config)
 
-        await self.bot.start()
+        await self.bot.start(bot_token=app.bot_token)
 
         self.bot_info = await self.bot.get_me()
 
@@ -791,8 +737,6 @@ class DownloadBot:
         admin = await self.client.get_me()
         self.allowed_user_ids.append(admin.id)
 
-        await self.bot.set_bot_commands(commands)
-
         self._register_bot_handlers()
 
         try:
@@ -801,198 +745,79 @@ class DownloadBot:
             logger.warning(f"Failed to send help message: {e}")
 
         self.reply_task = _bot.app.loop.create_task(_bot.update_reply_message())
-
-        # Recover incomplete tasks from previous run
         _bot.app.loop.create_task(_bot.recover_tasks())
 
-        self.bot.add_handler(
-            MessageHandler(
-                forward_to_comments,
-                filters=pyrogram.filters.command(["forward_to_comments"])
-                & pyrogram.filters.user(self.allowed_user_ids),
-            )
-        )
-
-        # 自动注册频道监听 handler（支持 config.yaml 中的 chat）
-        if self.app.chat_download_config:
-            self._register_listen_handler()
-            logger.info("Auto-registered listen handler for config chats")
-
     def _register_bot_handlers(self):
-        """Register all bot MessageHandlers and CallbackQueryHandler.
+        """Register Telethon NewMessage dispatcher once."""
+        if getattr(self, "_bot_events_registered", False):
+            return
+        self._bot_events_registered = True
 
-        Called from start() and _reconnect_bot() — stop() clears handlers,
-        so they must be re-registered after every reconnect.
-        """
-        self.bot.add_handler(
-            MessageHandler(
-                download_from_bot,
-                filters=pyrogram.filters.command(["download"])
-                & pyrogram.filters.user(self.allowed_user_ids),
-            )
-        )
-        self.bot.add_handler(
-            MessageHandler(
-                forward_messages,
-                filters=pyrogram.filters.command(["forward"])
-                & pyrogram.filters.user(self.allowed_user_ids),
-            )
-        )
-        self.bot.add_handler(
-            MessageHandler(
-                download_forward_media,
-                filters=pyrogram.filters.media
-                & pyrogram.filters.user(self.allowed_user_ids),
-            )
-        )
-        self.bot.add_handler(
-            MessageHandler(
-                download_from_link,
-                filters=pyrogram.filters.regex(r"^https://t.me.*")
-                & pyrogram.filters.user(self.allowed_user_ids),
-            )
-        )
-        self.bot.add_handler(
-            MessageHandler(
-                set_listen_forward_msg,
-                filters=pyrogram.filters.command(["listen_forward"])
-                & pyrogram.filters.user(self.allowed_user_ids),
-            )
-        )
-        self.bot.add_handler(
-            MessageHandler(
-                help_command,
-                filters=pyrogram.filters.command(["help"])
-                & pyrogram.filters.user(self.allowed_user_ids),
-            )
-        )
-        self.bot.add_handler(
-            MessageHandler(
-                get_info,
-                filters=pyrogram.filters.command(["get_info"])
-                & pyrogram.filters.user(self.allowed_user_ids),
-            )
-        )
-        self.bot.add_handler(
-            MessageHandler(
-                help_command,
-                filters=pyrogram.filters.command(["start"])
-                & pyrogram.filters.user(self.allowed_user_ids),
-            )
-        )
-        self.bot.add_handler(
-            MessageHandler(
-                set_language,
-                filters=pyrogram.filters.command(["set_language"])
-                & pyrogram.filters.user(self.allowed_user_ids),
-            )
-        )
-        self.bot.add_handler(
-            MessageHandler(
-                add_filter,
-                filters=pyrogram.filters.command(["add_filter"])
-                & pyrogram.filters.user(self.allowed_user_ids),
-            )
-        )
+        not_migrated = {
+            "/forward",
+            "/listen_forward",
+            "/forward_to_comments",
+        }
 
-        self.bot.add_handler(
-            MessageHandler(
-                add_filter_advertisement_filter,
-                filters=pyrogram.filters.command(["add_ad"])
-                & pyrogram.filters.user(self.allowed_user_ids),
-            )
-        )
-        self.bot.add_handler(
-            MessageHandler(
-                remove_filter_advertisement_filter,
-                filters=pyrogram.filters.command(["remove_ad"])
-                & pyrogram.filters.user(self.allowed_user_ids),
-            )
-        )
-        self.bot.add_handler(
-            MessageHandler(
-                add_replace_advertisement_filter,
-                filters=pyrogram.filters.command(["add_replace_ad"])
-                & pyrogram.filters.user(self.allowed_user_ids),
-            )
-        )
-        self.bot.add_handler(
-            MessageHandler(
-                remove_replace_advertisement_filter,
-                filters=pyrogram.filters.command(["remove_replace_ad"])
-                & pyrogram.filters.user(self.allowed_user_ids),
-            )
-        )
-        self.bot.add_handler(
-            MessageHandler(
-                set_add_advertisement,
-                filters=pyrogram.filters.command(["set_ad"])
-                & pyrogram.filters.user(self.allowed_user_ids),
-            )
-        )
+        @_bot._tg_bot.on(events.NewMessage(incoming=True))
+        async def _dispatch(event):
+            if event.sender_id not in self.allowed_user_ids:
+                return
+            msg = wrap_message(event.message)
+            text = (msg.text or "").strip()
+            cmd = ""
+            if text.startswith("/"):
+                cmd = text.split()[0].split("@")[0].lower()
+            if cmd in not_migrated:
+                await event.respond("该命令尚未迁移到 Telethon")
+                return
+            if cmd in ("/help", "/start"):
+                await help_command(self.bot, msg)
+            elif cmd == "/download":
+                await download_from_bot(self.bot, msg)
+            elif cmd == "/get_info":
+                await get_info(self.bot, msg)
+            elif cmd == "/set_language":
+                await set_language(self.bot, msg)
+            elif cmd == "/add_filter":
+                await add_filter(self.bot, msg)
+            elif cmd == "/add_ad":
+                await add_filter_advertisement_filter(self.bot, msg)
+            elif cmd == "/remove_ad":
+                await remove_filter_advertisement_filter(self.bot, msg)
+            elif cmd == "/add_replace_ad":
+                await add_replace_advertisement_filter(self.bot, msg)
+            elif cmd == "/remove_replace_ad":
+                await remove_replace_advertisement_filter(self.bot, msg)
+            elif cmd == "/set_ad":
+                await set_add_advertisement(self.bot, msg)
+            elif cmd == "/stop":
+                await stop(self.bot, msg)
+            elif text.startswith("https://t.me"):
+                await download_from_link(self.bot, msg)
+            elif msg.media:
+                await download_forward_media(self.bot, msg)
 
-        self.bot.add_handler(
-            MessageHandler(
-                stop,
-                filters=pyrogram.filters.command(["stop"])
-                & pyrogram.filters.user(self.allowed_user_ids),
-            )
-        )
-
-        self.bot.add_handler(
-            CallbackQueryHandler(
-                on_query_handler, filters=pyrogram.filters.user(self.allowed_user_ids)
-            )
-        )
-
-        # forward_to_comments handler (registered after reply_task in original start)
-        self.bot.add_handler(
-            MessageHandler(
-                forward_to_comments,
-                filters=pyrogram.filters.command(["forward_to_comments"])
-                & pyrogram.filters.user(self.allowed_user_ids),
-            )
-        )
+        logger.info("Telethon bot NewMessage dispatcher registered")
 
     async def _reconnect_bot(self):
-        """Stop and restart the bot client to recover from persistent connection loss.
-
-        Uses the existing session file — no re-authentication needed.
-        Returns True if reconnect succeeded, False otherwise.
-
-        所有操作加 asyncio.wait_for 超时，防止 stop()/start() 在半死 TCP 上 hang
-        导致 update_reply_message 循环永久阻塞、所有进度报告停止。
-        """
+        """Reconnect bot client without dropping event handlers."""
         try:
-            logger.warning("Attempting bot reconnect: stop()...")
+            logger.warning("Attempting bot reconnect: disconnect()...")
             try:
-                await asyncio.wait_for(self.bot.stop(), timeout=30)
-            except TimeoutError:
-                logger.error("bot.stop() timed out after 30s, force disconnect")
-                try:
-                    await self.bot.disconnect()
-                except Exception:
-                    pass
-                self.bot.is_connected = False
+                await asyncio.wait_for(self.bot.disconnect(), timeout=30)
             except Exception as e:
-                logger.warning(f"bot.stop() during reconnect failed (continuing): {e}")
-                self.bot.is_connected = False
-        except Exception as e:
-            logger.warning(f"bot.stop() outer error (continuing): {e}")
+                logger.warning(f"bot.disconnect() during reconnect: {e}")
             self.bot.is_connected = False
-
-        try:
             logger.warning("Attempting bot reconnect: start()...")
-            try:
-                await asyncio.wait_for(self.bot.start(), timeout=30)
-            except TimeoutError:
-                logger.error("bot.start() timed out after 30s, reconnect failed")
-                return False
-            self._register_bot_handlers()
-            logger.success("Bot reconnected successfully — handlers re-registered")
+            await asyncio.wait_for(
+                self.bot.start(bot_token=self.app.bot_token), timeout=30
+            )
+            self.bot.is_connected = True
+            logger.success("Bot reconnected successfully")
             return True
         except Exception as e:
-            logger.error(f"bot.start() during reconnect failed: {e}")
+            logger.error(f"bot reconnect failed: {e}")
             return False
 
 
@@ -1028,7 +853,7 @@ def _cleanup_task_temp_files(chat_id: int):
 
 async def start_download_bot(
     app: Application,
-    client: pyrogram.Client,
+    client,
     add_download_task: Callable,
     download_chat_task: Callable,
 ):
@@ -1047,7 +872,7 @@ async def stop_download_bot():
         await _bot.bot.stop()
 
 
-async def send_help_str(client: pyrogram.Client, chat_id):
+async def send_help_str(client, chat_id):
     """
     Sends a help string to the specified chat ID using the provided client.
 
@@ -1063,19 +888,13 @@ async def send_help_str(client: pyrogram.Client, chat_id):
         its version, and the available commands.
     """
 
-    update_keyboard = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "Github",
-                    url="https://github.com/tangyoha/telegram_media_downloader/releases",
-                ),
-                InlineKeyboardButton(
-                    "Join us", url="https://t.me/TeegramMediaDownload"
-                ),
-            ]
-        ]
-    )
+    update_keyboard = [
+        Button.url(
+            "Github",
+            "https://github.com/tangyoha/telegram_media_downloader/releases",
+        ),
+        Button.url("Join us", "https://t.me/TeegramMediaDownload"),
+    ]
     latest_release_str = ""
     # try:
     #     latest_release = get_latest_release(_bot.app.proxy)
@@ -1114,7 +933,7 @@ async def send_help_str(client: pyrogram.Client, chat_id):
     await client.send_message(chat_id, msg, reply_markup=update_keyboard)
 
 
-async def help_command(client: pyrogram.Client, message: pyrogram.types.Message):
+async def help_command(client, message):
     """
     Sends a message with the available commands and their usage.
 
@@ -1129,7 +948,7 @@ async def help_command(client: pyrogram.Client, message: pyrogram.types.Message)
     await send_help_str(client, message.chat.id)
 
 
-async def set_language(client: pyrogram.Client, message: pyrogram.types.Message):
+async def set_language(client, message):
     """
     Set the language of the bot.
 
@@ -1163,7 +982,7 @@ async def set_language(client: pyrogram.Client, message: pyrogram.types.Message)
         )
 
 
-async def get_info(client: pyrogram.Client, message: pyrogram.types.Message):
+async def get_info(client, message):
     """
     Async function that retrieves information from a group message link.
     """
@@ -1213,7 +1032,7 @@ async def get_info(client: pyrogram.Client, message: pyrogram.types.Message):
     )
 
 
-async def add_filter(client: pyrogram.Client, message: pyrogram.types.Message):
+async def add_filter(client, message):
     """
     Set the download filter of the bot.
 
@@ -1247,9 +1066,7 @@ async def add_filter(client: pyrogram.Client, message: pyrogram.types.Message):
     return
 
 
-async def add_filter_advertisement_filter(
-    client: pyrogram.Client, message: pyrogram.types.Message
-):
+async def add_filter_advertisement_filter(client, message):
     """
     Set the download filter of the bot.
 
@@ -1282,9 +1099,7 @@ async def add_filter_advertisement_filter(
     _bot.app.update_config(True)
 
 
-async def remove_filter_advertisement_filter(
-    client: pyrogram.Client, message: pyrogram.types.Message
-):
+async def remove_filter_advertisement_filter(client, message):
     """
     Add or remove advertisement filter
     """
@@ -1311,9 +1126,7 @@ async def remove_filter_advertisement_filter(
         )
 
 
-async def set_add_advertisement(
-    client: pyrogram.Client, message: pyrogram.types.Message
-):
+async def set_add_advertisement(client, message):
     """
     Add or remove advertisement filter
     """
@@ -1441,9 +1254,7 @@ async def proc_replace_advertisement(mesage_link: str, filter_str: str):
     return processor.extract_text(total_span)
 
 
-async def add_replace_advertisement_filter(
-    client: pyrogram.Client, message: pyrogram.types.Message
-):
+async def add_replace_advertisement_filter(client, message):
     """
     Set the download filter of the bot.
 
@@ -1480,9 +1291,7 @@ async def add_replace_advertisement_filter(
         return
 
 
-async def remove_replace_advertisement_filter(
-    client: pyrogram.Client, message: pyrogram.types.Message
-):
+async def remove_replace_advertisement_filter(client, message):
     """
     Set the download filter of the bot.
 
@@ -1532,8 +1341,8 @@ async def direct_download(
     download_bot: DownloadBot,
     chat_id: str | int,
     message: pyrogram.types.Message,
-    download_message: pyrogram.types.Message,
-    client: pyrogram.Client = None,
+    download_message,
+    client=None,
     source_chat_id: int = 0,
     source_message_id: int = 0,
     source_chat_title: str = "",
@@ -1605,9 +1414,7 @@ async def direct_download(
     # concurrency guard is always respected.
 
 
-async def download_forward_media(
-    client: pyrogram.Client, message: pyrogram.types.Message
-):
+async def download_forward_media(client, message):
     """
     Downloads the media from a forwarded message.
 
@@ -1619,7 +1426,7 @@ async def download_forward_media(
         None
     """
 
-    if message.media and getattr(message, message.media.value):
+    if message.media:
         # If forwarded from a channel/group, download from source
         if message.forward_from_chat:
             source_chat_id = message.forward_from_chat.id
@@ -1706,11 +1513,11 @@ async def download_forward_media(
     await client.send_message(
         message.from_user.id,
         f"1. {_t('Direct download, directly forward the message to your robot')}\n\n",
-        parse_mode=pyrogram.enums.ParseMode.HTML,
+        parse_mode="html",
     )
 
 
-async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Message):
+async def download_from_link(client, message):
     """
     Downloads a single message from a Telegram link.
 
@@ -1732,9 +1539,7 @@ async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Me
 
     text = message.text.split()
     if len(text) != 1:
-        await client.send_message(
-            message.from_user.id, msg, parse_mode=pyrogram.enums.ParseMode.HTML
-        )
+        await client.send_message(message.from_user.id, msg, parse_mode="html")
 
     chat_id, message_id, _ = await parse_link(_bot.client, text[0])
 
@@ -1758,15 +1563,13 @@ async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Me
                 )
         return
 
-    await client.send_message(
-        message.from_user.id, msg, parse_mode=pyrogram.enums.ParseMode.HTML
-    )
+    await client.send_message(message.from_user.id, msg, parse_mode="html")
 
 
 # pylint: disable = R0912, R0915,R0914
 
 
-async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Message):
+async def download_from_bot(client, message):
     """Download from bot"""
 
     msg = (
@@ -1781,9 +1584,7 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
 
     args = message.text.split(maxsplit=4)
     if not message.text or len(args) < 4:
-        await client.send_message(
-            message.from_user.id, msg, parse_mode=pyrogram.enums.ParseMode.HTML
-        )
+        await client.send_message(message.from_user.id, msg, parse_mode="html")
         return
 
     url = args[1]
@@ -1791,9 +1592,7 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
         start_offset_id = int(args[2])
         end_offset_id = int(args[3])
     except Exception:
-        await client.send_message(
-            message.from_user.id, msg, parse_mode=pyrogram.enums.ParseMode.HTML
-        )
+        await client.send_message(message.from_user.id, msg, parse_mode="html")
         return
 
     limit = 0
@@ -1871,7 +1670,7 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
 
 
 async def get_forward_task_node(
-    client: pyrogram.Client,
+    client,
     message: pyrogram.types.Message,
     task_type: TaskType,
     src_chat_link: str,
@@ -1985,14 +1784,12 @@ async def get_forward_task_node(
 
 
 # pylint: disable = R0914
-async def forward_message_impl(
-    client: pyrogram.Client, message: pyrogram.types.Message, reply_comment: bool
-):
+async def forward_message_impl(reply_comment: bool):
     """
     Forward message
     """
 
-    async def report_error(client: pyrogram.Client, message: pyrogram.types.Message):
+    async def report_error(message: pyrogram.types.Message):
         """Report error"""
 
         await client.send_message(
@@ -2092,7 +1889,7 @@ async def forward_message_impl(
         complete_task(node.task_id)
 
 
-async def forward_messages(client: pyrogram.Client, message: pyrogram.types.Message):
+async def forward_messages(message: pyrogram.types.Message):
     """
     Forwards messages from one chat to another.
 
@@ -2106,9 +1903,7 @@ async def forward_messages(client: pyrogram.Client, message: pyrogram.types.Mess
     return await forward_message_impl(client, message, False)
 
 
-async def forward_normal_content(
-    client: pyrogram.Client, node: TaskNode, message: pyrogram.types.Message
-):
+async def forward_normal_content(node: TaskNode):
     """Forward normal content"""
     forward_ret = ForwardStatus.FailedForward
     caption = message.caption
@@ -2573,9 +2368,7 @@ async def _pending_consumer_loop():
             logger.warning(f"Pending consumer loop error: {e}")
 
 
-async def set_listen_forward_msg(
-    client: pyrogram.Client, message: pyrogram.types.Message
-):
+async def set_listen_forward_msg(message: pyrogram.types.Message):
     """
     Set the chat to listen for forwarded messages.
     """
@@ -2617,34 +2410,14 @@ async def set_listen_forward_msg(
         _bot.pending_consumer_task = _bot.app.loop.create_task(_consume_one_pending())
 
 
-async def stop(client: pyrogram.Client, message: pyrogram.types.Message):
+async def stop(client, message):
     """Stops listening for forwarded messages."""
-
-    await client.send_message(
-        message.chat.id,
-        _t("Please select:"),
-        reply_markup=InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        _t("Stop Download"), callback_data="stop_download"
-                    ),
-                    InlineKeyboardButton(
-                        _t("Stop Forward"), callback_data="stop_forward"
-                    ),
-                ],
-                [  # Second row
-                    InlineKeyboardButton(
-                        _t("Stop Listen Forward"), callback_data="stop_listen_forward"
-                    )
-                ],
-            ]
-        ),
-    )
+    _bot.stop_task("all")
+    await client.send_message(message.from_user.id, _t("Stopped"))
 
 
 async def stop_task(
-    client: pyrogram.Client,
+    client,
     query: pyrogram.types.CallbackQuery,
     queryHandler: str,
     task_type: TaskType,
@@ -2697,9 +2470,7 @@ async def stop_task(
         _bot.stop_task(task_id)
 
 
-async def on_query_handler(
-    client: pyrogram.Client, query: pyrogram.types.CallbackQuery
-):
+async def on_query_handler(query: pyrogram.types.CallbackQuery):
     """
     Asynchronous function that handles query callbacks.
 
@@ -2717,7 +2488,7 @@ async def on_query_handler(
             await stop_task(client, query, queryHandler, TaskType(it.value))
 
 
-async def forward_to_comments(client: pyrogram.Client, message: pyrogram.types.Message):
+async def forward_to_comments(message: pyrogram.types.Message):
     """
     Forwards specified media to a designated comment section.
 

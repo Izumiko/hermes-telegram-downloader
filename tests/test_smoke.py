@@ -6,6 +6,7 @@ import pytest
 
 SUBMODULES = [
     "hermes_telegram_downloader.module.app",
+    "hermes_telegram_downloader.module.bot",
     "hermes_telegram_downloader.module.cloud_drive",
     "hermes_telegram_downloader.module.download_stat",
     "hermes_telegram_downloader.module.filter",

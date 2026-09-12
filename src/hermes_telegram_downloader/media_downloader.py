@@ -1569,7 +1569,14 @@ def main():
         for _ in range(_MAX_WORKERS):
             tasks.append(app.loop.create_task(worker(client)))
         if app.bot_token:
-            logger.warning("Bot 尚未迁移到 Telethon，跳过 start_download_bot")
+            from hermes_telegram_downloader.module.bot import (
+                start_download_bot,
+                stop_download_bot,
+            )
+
+            app.loop.run_until_complete(
+                start_download_bot(app, client, add_download_task, download_chat_task)
+            )
         _exec_loop()
     except KeyboardInterrupt:
         logger.info(_t("KeyboardInterrupt"))
@@ -1578,6 +1585,13 @@ def main():
     finally:
         app.is_running = False
         save_downloads()
+        if app.bot_token:
+            try:
+                from hermes_telegram_downloader.module.bot import stop_download_bot
+
+                app.loop.run_until_complete(stop_download_bot())
+            except Exception:
+                pass
         app.loop.run_until_complete(stop_server(client))
         for task in tasks:
             task.cancel()

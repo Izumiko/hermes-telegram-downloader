@@ -911,9 +911,7 @@ async def _async_retry_download(
         # for forwarded messages with stale file references.
         if source_link:
             try:
-                from hermes_telegram_downloader.module.pyrogram_extension import (
-                    parse_link,
-                )
+                from hermes_telegram_downloader.module.tg.bot_api import parse_link
 
                 link_chat_id, link_msg_id, _ = await parse_link(client, source_link)
                 if link_chat_id and link_msg_id:

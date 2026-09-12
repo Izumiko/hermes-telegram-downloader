@@ -29,9 +29,7 @@ def test_parse_link_public():
         async def get_entity(self, _):
             raise AssertionError("should not resolve")
 
-    group, post, topic = asyncio.run(
-        parse_link(_C(), "https://t.me/somechannel/42")
-    )
+    group, post, topic = asyncio.run(parse_link(_C(), "https://t.me/somechannel/42"))
     assert group == "somechannel"
     assert post == 42
     assert topic is None or topic == 0

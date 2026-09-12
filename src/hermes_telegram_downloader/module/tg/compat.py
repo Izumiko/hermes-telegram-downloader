@@ -81,7 +81,9 @@ class BotClientProxy:
             buttons=buttons or reply_markup,
         )
 
-    async def edit_message_text(self, entity, message_id, text, parse_mode=None, **kwargs):
+    async def edit_message_text(
+        self, entity, message_id, text, parse_mode=None, **kwargs
+    ):
         return await self._c.edit_message(
             entity, message_id, text, parse_mode=_parse_mode(parse_mode)
         )
