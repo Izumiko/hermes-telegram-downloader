@@ -99,7 +99,7 @@
 
 - **Multilingual** — Chinese / English / Russian / Ukrainian
 - **rclone cloud upload** — optional post-download cloud drive upload
-- **Proxy** — Pyrogram native proxy + Docker environment variable proxy
+- **Proxy** — Telethon native proxy + Docker environment variable proxy
 - **Local dev mode** — `run_local.py` with mock data, no Telegram account needed
 - **Log separation** — `tdl.log` + `download.log`, 10MB rotation, 30-day retention
 
@@ -113,7 +113,7 @@
 │                                                       │
 │  ┌──────────┐   ┌──────────────┐   ┌──────────────┐ │
 │  │ Bot (TG) │   │  WebUI :5000 │   │  Worker Pool │ │
-│  │ Pyrogram │   │   Flask      │   │  (N workers) │ │
+│  │ Telethon │   │   Flask      │   │  (N workers) │ │
 │  └────┬─────┘   └──────┬───────┘   └──────┬───────┘ │
 │       │                │                   │         │
 │       │    ┌───────────┼───────────────────┘         │
@@ -153,7 +153,7 @@
 ### Core Flow
 
 1. **User sends command** → Bot handler creates TaskNode → `save_task()` persists → `add_download_task()` enqueues
-2. **Worker dequeues** → `download_task()` → `download_media()` → Pyrogram download
+2. **Worker dequeues** → `download_task()` → `download_media()` → Telethon download
 3. **Progress callback** → `update_download_status()` updates `_download_result` → 20% milestone triggers Bot notification
 4. **Download complete** → `complete_task()` removes from store → `save_downloads()` writes history
 5. **Download failed** → `add_failed_download()` records to failed list → WebUI retry available
@@ -174,15 +174,9 @@ _pending_consumer_loop() every 5s:
     └─ fill up to max_download_task pending tasks into worker queue
 ```
 
-### TCP Timeout Patch
+### FloodWait
 
-Pyrogram's default `TCP.TIMEOUT=10s` causes reconnect storms when Telegram throttles downloads. Patched to 900s:
-
-```python
-from pyrogram.connection.transport.tcp import TCP as _TCP
-
-_TCP.TIMEOUT = 900
-```
+The Telethon client uses `flood_sleep_threshold=0` (no automatic sleep). Rate limits are handled by a shared cooldown in `module/tg/errors.py`, shown in the WebUI.
 
 ---
 
@@ -458,4 +452,4 @@ Based on [tangyoha/telegram_media_downloader](https://github.com/tangyoha/telegr
 ## Acknowledgements
 
 - Upstream: [tangyoha/telegram_media_downloader](https://github.com/tangyoha/telegram_media_downloader)
-- Pyrogram: [pyrogram](https://github.com/pyrogram/pyrogram)
+- Telethon: [Telethon](https://github.com/LonamiWebs/Telethon)

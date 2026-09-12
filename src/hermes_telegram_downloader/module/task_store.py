@@ -5,7 +5,6 @@ import os
 import re
 import threading
 import time
-from typing import Optional
 
 from loguru import logger
 

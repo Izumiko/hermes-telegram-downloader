@@ -15,7 +15,7 @@ LANG_CODE = "en"
 def print_meta(logger):
     """Prints meta-data of the downloader script."""
     console = Console()
-    # pylint: disable = C0301
+
     console.log(
         f"[bold]Telegram Media Downloader v{__version__}[/bold],\n[i]{__copyright__}[/i]"
     )

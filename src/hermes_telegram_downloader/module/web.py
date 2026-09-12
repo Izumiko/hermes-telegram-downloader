@@ -59,7 +59,6 @@ def run_web_server(app: Application):
     )
 
 
-# pylint: disable = W0603
 _app: Application = None
 
 
@@ -131,7 +130,7 @@ def get_flood_wait():
         int(now - _throttle_state["since"]) if _throttle_state["since"] > 0 else 0
     )
     try:
-        from hermes_telegram_downloader.module.pyrogram_extension import (
+        from hermes_telegram_downloader.module.tg.errors import (
             _unified_flood_wait,
             get_flood_wait_remaining,
             is_flood_wait_active,
@@ -200,18 +199,6 @@ def set_max_workers():
     _app.max_download_task = n
     # max_concurrent_transmissions follows max_download_task * 5
     _app.max_concurrent_transmissions = n * 5
-    try:
-        from hermes_telegram_downloader.module.bot import _bot
-        from hermes_telegram_downloader.module.pyrogram_extension import (
-            set_max_concurrent_transmissions,
-        )
-
-        if _bot and _bot.client:
-            set_max_concurrent_transmissions(_bot.client, n * 5)
-    except ImportError:
-        pass
-    except Exception:
-        pass
     # Persist to config file
     _app.update_config(True)
     return jsonify(max_workers=n)
@@ -257,7 +244,7 @@ def get_download_list():
             if not progress and value["total_size"] > 0:
                 progress = round(value["down_byte"] / value["total_size"] * 100, 1)
 
-            # Staleness check: if speed hasn't been updated in 3s (no Pyrogram callback), show 0
+            # Staleness check: if speed hasn't been updated in 3s (no progress callback), show 0
             import time as _now
 
             raw_speed = value["download_speed"]
@@ -295,7 +282,7 @@ def get_download_list():
 
             # Phase: 区分 placeholder（消息数据获取中）和真正在下载
             # total_size<=1 且 down_byte==0 = consumer 刚创建的占位条目
-            # Pyrogram 第一次回调就会覆盖为真实 total_size
+            # Telethon 第一次进度回调就会覆盖为真实 total_size
             if (
                 status == "active"
                 and value.get("total_size", 0) <= 1
@@ -481,14 +468,8 @@ def web_check_file_exists():
 @_flask_app.route("/delete_task", methods=["POST"])
 def web_delete_task():
     """Delete a specific download task. If delete_file=true, also remove the local file."""
-    try:
-        from hermes_telegram_downloader.module.pyrogram_extension import (
-            remove_download_cache,
-        )
-    except ImportError:
-
-        def remove_download_cache(*_args, **_kwargs):
-            return None
+    def remove_download_cache(*_args, **_kwargs):
+        return None
 
     task_id = request.args.get("task_id")
     if not task_id:
@@ -942,7 +923,7 @@ async def _async_retry_download(
             _restore_failed("重试失败: 消息不存在或已删除")
             return
 
-        from hermes_telegram_downloader.module.app import TaskNode, TaskType
+        from hermes_telegram_downloader.module.app import TaskNode
 
         node = TaskNode(
             chat_id=cid,

@@ -16,7 +16,6 @@ from hermes_telegram_downloader import utils
 from hermes_telegram_downloader.module.app import (
     Application,
     ChatDownloadConfig,
-    ForwardStatus,
     QueryHandler,
     QueryHandlerStr,
     TaskNode,
@@ -34,10 +33,8 @@ from hermes_telegram_downloader.module.filter import Filter
 from hermes_telegram_downloader.module.language import Language, _t
 from hermes_telegram_downloader.module.task_store import (
     complete_task,
-    get_pending_tasks,
     get_running_tasks,
     save_task,
-    update_download_state,
     update_task_progress,
 )
 from hermes_telegram_downloader.module.tg.bot_api import (
@@ -51,10 +48,18 @@ from hermes_telegram_downloader.module.tg.compat import (
     UserClientProxy,
     wrap_message,
 )
+from hermes_telegram_downloader.module.tg.history import iter_chat_messages
+from hermes_telegram_downloader.module.tg.send import (
+    forward_one,
+    get_discussion_message,
+    is_bot_user,
+    is_protected_chat,
+)
 from hermes_telegram_downloader.utils.format import replace_date_time, validate_title
 from hermes_telegram_downloader.utils.meta_data import MetaData
 
-# pylint: disable = C0301, R0902
+_bot_conn_errors = {"count": 0}
+_BOT_RECONNECT_THRESHOLD = 10
 
 
 def _cleanup_stopped_task(node):
@@ -135,7 +140,7 @@ def _record_pending_failures(node):
 
     The criteria: entry exists in _download_result, belongs to this task,
     is incomplete (down_byte < total_size), AND has NEVER been touched by
-    update_download_status (start_time == end_time means Pyrogram callback
+    update_download_status (start_time == end_time means progress callback
     never ran → never reached download_media's actual download loop).
     Entries that were touched by download (start_time < end_time) have already
     been handled by download_task's add_failed_download call, so we skip them
@@ -166,7 +171,7 @@ def _record_pending_failures(node):
                     continue
                 # Only catch entries that never started downloading
                 # (down_byte == 0 or down_byte == total_size with same timestamps
-                #  means Pyrogram progress callback never ran)
+                #  means progress callback never ran)
                 if (
                     value.get("down_byte", 0) < value.get("total_size", 1)
                     and value.get("total_size", 0) > 0
@@ -239,7 +244,7 @@ class DownloadBot:
         # to bot_tasks.json. Cleared on restart (workers re-fetch via get_messages).
         self._in_queue: set = set()
         # Cache of message objects from direct_download so consumer can skip
-        # get_messages. {task_id: pyrogram.Message}. Cleared on restart.
+        # get_messages. {task_id: Telethon Message}. Cleared on restart.
         self._cached_messages: dict = {}
 
     def gen_task_id(self) -> int:
@@ -279,11 +284,6 @@ class DownloadBot:
 
             # Check if bot connection has degraded — reconnect if too many
             # consecutive errors and cooldown has passed.
-            from hermes_telegram_downloader.module.pyrogram_extension import (
-                _BOT_RECONNECT_THRESHOLD,
-                _bot_conn_errors,
-            )
-
             if _bot_conn_errors["count"] >= _BOT_RECONNECT_THRESHOLD:
                 now = time.time()
                 if now - _bot_last_reconnect >= _bot_reconnect_cooldown:
@@ -452,19 +452,17 @@ class DownloadBot:
 
     async def _recover_forward_task(self, task_data, node, offset_id):
         """Recover a forward task from last checkpoint."""
-        from hermes_telegram_downloader.module.pyrogram_extension import (
-            report_bot_status,
-        )
+        from hermes_telegram_downloader.module.tg.bot_api import report_bot_status
 
         forward_failed = False
         try:
-            async for item in get_chat_history_v2(
+            async for item in iter_chat_messages(
                 self.client,
                 node.chat_id,
-                limit=node.limit,
+                min_id=offset_id,
                 max_id=node.end_offset_id,
-                offset_id=offset_id,
                 reverse=True,
+                limit=node.limit or None,
             ):
                 if not node.has_protected_content:
                     await forward_normal_content(self.client, node, item)
@@ -487,9 +485,7 @@ class DownloadBot:
 
     async def _recover_direct_task(self, task_data, node):
         """Recover a direct download task (single message)."""
-        from hermes_telegram_downloader.module.pyrogram_extension import (
-            report_bot_status,
-        )
+        from hermes_telegram_downloader.module.tg.bot_api import report_bot_status
 
         extra_data = task_data.get("extra_data", {})
         message_id = extra_data.get("message_id", 0)
@@ -515,7 +511,7 @@ class DownloadBot:
                     )
                 else:
                     logger.info(
-                        f"Recovery: source message has no media, trying original chat"
+                        "Recovery: source message has no media, trying original chat"
                     )
                     msg = None
 
@@ -614,55 +610,33 @@ class DownloadBot:
 
     def _register_listen_handler(self):
         """在 user client 上注册 NewMessage handler，实时检测监听频道的新消息"""
-        logger.info("listen_forward 尚未迁移到 Telethon，跳过 handler 注册")
-        return
         if self._listen_handler_ref:
-            return  # 已注册
+            return
+        raw = getattr(self.client, "_c", self.client)
 
-        async def _on_new_message(client, message):
-            chat_id = message.chat.id
-            if not message.media:
-                logger.debug(
-                    f"NewMessage handler: msg {message.id} from chat {chat_id} has no media, skipping"
-                )
+        @raw.on(events.NewMessage(incoming=True))
+        async def _on_new_message(event):
+            if not event.media:
                 return
-
-            # 检查是否是 listen_forward_chat 中的频道
+            message = wrap_message(event.message)
+            chat_id = event.chat_id
             if chat_id in self.listen_forward_chat:
                 node = self.listen_forward_chat[chat_id]
-                if not node.is_running:
-                    logger.debug(
-                        f"NewMessage handler: msg {message.id} from chat {chat_id} matches listen_forward but node not running"
-                    )
+                if node.is_stop_transmission or not node.is_running:
                     return
                 try:
                     if not node.has_protected_content:
-                        await forward_normal_content(client, node, message)
-                        from hermes_telegram_downloader.module.pyrogram_extension import (
-                            report_bot_status,
-                        )
-
-                        await report_bot_status(client, node, immediate_reply=True)
+                        await forward_normal_content(self.client, node, message)
                     else:
                         await self.add_download_task(message, node)
                 except Exception as e:
                     logger.exception(f"Listen handler error for chat {chat_id}: {e}")
                 return
-
-            # 检查是否是 config.yaml 中配置的 chat
             if self.app and chat_id in self.app.chat_download_config:
                 chat_config = self.app.chat_download_config[chat_id]
-                # 只处理比 last_read_message_id 新的消息
                 if message.id <= chat_config.last_read_message_id:
-                    logger.debug(
-                        f"NewMessage handler: msg {message.id} from config chat {chat_id} <= last_read {chat_config.last_read_message_id}, skipping"
-                    )
                     return
-
-                # 创建临时 TaskNode 下载这条消息
                 try:
-                    from hermes_telegram_downloader.module.app import TaskNode
-
                     node = TaskNode(
                         chat_id=chat_id,
                         from_user_id=0,
@@ -671,12 +645,6 @@ class DownloadBot:
                         download_filter=chat_config.download_filter,
                     )
                     node.task_id_display = f"config-{chat_id}-{message.id}"
-
-                    # 不更新 last_read_message_id — 实时监控只负责下载，
-                    # 扫描位置由 download_chat_task 管理。这样下载失败时
-                    # 重启扫描能重新覆盖这些消息（_is_exist 检查防止重复下载）。
-
-                    # 加入下载队列
                     await self.add_download_task(message, node)
                     logger.info(
                         f"Config chat {chat_id}: new message {message.id} queued for download"
@@ -685,21 +653,10 @@ class DownloadBot:
                     logger.exception(
                         f"Config chat handler error for chat {chat_id}: {e}"
                     )
-                return
 
-            # 消息不属于任何已配置的频道
-            logger.debug(
-                f"NewMessage handler: msg {message.id} from chat {chat_id} not in any configured channel (listen_forward={list(self.listen_forward_chat.keys())}, config_chats={list(self.app.chat_download_config.keys()) if self.app else []})"
-            )
-
-        handler = MessageHandler(
-            _on_new_message,
-            filters=pyrogram.filters.media,  # 只处理有媒体的消息
-        )
-        self.client.add_handler(handler)
-        self._listen_handler_ref = handler
-        logger.info("Listen handler registered on user client for real-time monitoring")
-
+        self._listen_handler_ref = True
+        logger.info("Listen handler registered on user client")
+        return
     async def start(
         self,
         app: Application,
@@ -746,18 +703,14 @@ class DownloadBot:
 
         self.reply_task = _bot.app.loop.create_task(_bot.update_reply_message())
         _bot.app.loop.create_task(_bot.recover_tasks())
+        if self.app.chat_download_config:
+            self._register_listen_handler()
 
     def _register_bot_handlers(self):
         """Register Telethon NewMessage dispatcher once."""
         if getattr(self, "_bot_events_registered", False):
             return
         self._bot_events_registered = True
-
-        not_migrated = {
-            "/forward",
-            "/listen_forward",
-            "/forward_to_comments",
-        }
 
         @_bot._tg_bot.on(events.NewMessage(incoming=True))
         async def _dispatch(event):
@@ -768,9 +721,6 @@ class DownloadBot:
             cmd = ""
             if text.startswith("/"):
                 cmd = text.split()[0].split("@")[0].lower()
-            if cmd in not_migrated:
-                await event.respond("该命令尚未迁移到 Telethon")
-                return
             if cmd in ("/help", "/start"):
                 await help_command(self.bot, msg)
             elif cmd == "/download":
@@ -793,6 +743,12 @@ class DownloadBot:
                 await set_add_advertisement(self.bot, msg)
             elif cmd == "/stop":
                 await stop(self.bot, msg)
+            elif cmd == "/forward":
+                await forward_messages(self.bot, msg)
+            elif cmd == "/forward_to_comments":
+                await forward_to_comments(self.bot, msg)
+            elif cmd == "/listen_forward":
+                await set_listen_forward_msg(self.bot, msg)
             elif text.startswith("https://t.me"):
                 await download_from_link(self.bot, msg)
             elif msg.media:
@@ -877,7 +833,7 @@ async def send_help_str(client, chat_id):
     Sends a help string to the specified chat ID using the provided client.
 
     Parameters:
-        client (pyrogram.Client): The Pyrogram client used to send the message.
+        client: Telethon client used to send the message.
         chat_id: The ID of the chat to which the message will be sent.
 
     Returns:
@@ -938,8 +894,8 @@ async def help_command(client, message):
     Sends a message with the available commands and their usage.
 
     Parameters:
-        client (pyrogram.Client): The client instance.
-        message (pyrogram.types.Message): The message object.
+        client: Telethon client.
+        message: Telegram message.
 
     Returns:
         None
@@ -953,8 +909,8 @@ async def set_language(client, message):
     Set the language of the bot.
 
     Parameters:
-        client (pyrogram.Client): The pyrogram client.
-        message (pyrogram.types.Message): The message containing the command.
+        client: Telethon client.
+        message: Telegram message.
 
     Returns:
         None
@@ -1008,6 +964,8 @@ async def get_info(client, message):
             _message = await retry(_bot.client.get_messages, args=(chat_id, message_id))
             if _message:
                 meta_data = MetaData()
+                from hermes_telegram_downloader.media_downloader import set_meta_data
+
                 set_meta_data(meta_data, _message)
                 msg = (
                     f"`\n"
@@ -1037,8 +995,8 @@ async def add_filter(client, message):
     Set the download filter of the bot.
 
     Parameters:
-        client (pyrogram.Client): The pyrogram client.
-        message (pyrogram.types.Message): The message containing the command.
+        client: Telethon client.
+        message: Telegram message.
 
     Returns:
         None
@@ -1071,8 +1029,8 @@ async def add_filter_advertisement_filter(client, message):
     Set the download filter of the bot.
 
     Parameters:
-        client (pyrogram.Client): The pyrogram client.
-        message (pyrogram.types.Message): The message containing the command.
+        client: Telethon client.
+        message: Telegram message.
 
     Returns:
         None
@@ -1173,19 +1131,22 @@ class MessageProcessor:
 
     def __init__(self, raw_message, filter_str):
         self.raw_message = raw_message
-        self.raw_caption = raw_message.caption
+        self.raw_caption = (
+            getattr(raw_message, "caption", None)
+            or getattr(raw_message, "text", "")
+            or ""
+        )
         self.filter_str = filter_str
-        self.raw_filter_str = pyrogram.parser.utils.add_surrogates(filter_str)
-        self.raw_caption_str = pyrogram.parser.utils.add_surrogates(raw_message.caption)
+        self.raw_filter_str = filter_str
+        self.raw_caption_str = self.raw_caption
         self.idx = self.raw_caption_str.find(self.raw_filter_str)
         self.start_offset = self.idx
-        self.end_offset = self.idx + get_utf16_length(filter_str)
+        self.end_offset = self.idx + len(filter_str)
         self.filtered_entities = []
 
-    # pylint: disable = R0916
     def process_entities(self):
         """Process and filter message entities."""
-        for entity in self.raw_message.caption_entities:
+        for entity in getattr(self.raw_message, "caption_entities", None) or []:
             cur_start_offset = entity.offset
             cur_end_offset = entity.offset + entity.length
 
@@ -1224,7 +1185,7 @@ class MessageProcessor:
         text = self.raw_caption[total_span[0] : total_span[1]]
         for entity in self.filtered_entities:
             entity.offset -= total_span[0]
-        return pyrogram.parser.Parser.unparse(text, self.filtered_entities, True)
+        return text
 
 
 async def proc_replace_advertisement(mesage_link: str, filter_str: str):
@@ -1259,8 +1220,8 @@ async def add_replace_advertisement_filter(client, message):
     Set the download filter of the bot.
 
     Parameters:
-        client (pyrogram.Client): The pyrogram client.
-        message (pyrogram.types.Message): The message containing the command.
+        client: Telethon client.
+        message: Telegram message.
 
     Returns:
         None
@@ -1296,8 +1257,8 @@ async def remove_replace_advertisement_filter(client, message):
     Set the download filter of the bot.
 
     Parameters:
-        client (pyrogram.Client): The pyrogram client.
-        message (pyrogram.types.Message): The message containing the command.
+        client: Telethon client.
+        message: Telegram message.
 
     Returns:
         None
@@ -1340,7 +1301,7 @@ async def remove_replace_advertisement_filter(client, message):
 async def direct_download(
     download_bot: DownloadBot,
     chat_id: str | int,
-    message: pyrogram.types.Message,
+    message,
     download_message,
     client=None,
     source_chat_id: int = 0,
@@ -1419,8 +1380,8 @@ async def download_forward_media(client, message):
     Downloads the media from a forwarded message.
 
     Parameters:
-        client (pyrogram.Client): The client instance.
-        message (pyrogram.types.Message): The message object.
+        client: Telethon client.
+        message: Telegram message.
 
     Returns:
         None
@@ -1459,9 +1420,7 @@ async def download_forward_media(client, message):
                     f"trying link-based fetch"
                 )
                 try:
-                    from hermes_telegram_downloader.module.pyrogram_extension import (
-                        parse_link,
-                    )
+                    from hermes_telegram_downloader.module.tg.bot_api import parse_link
 
                     # Build source link: private channels use /c/, public use /username/
                     fwd_chat = message.forward_from_chat
@@ -1522,8 +1481,8 @@ async def download_from_link(client, message):
     Downloads a single message from a Telegram link.
 
     Parameters:
-        client (pyrogram.Client): The pyrogram client.
-        message (pyrogram.types.Message): The message containing the Telegram link.
+        client: Telethon client.
+        message: Telegram message containing the Telegram link.
 
     Returns:
         None
@@ -1564,9 +1523,6 @@ async def download_from_link(client, message):
         return
 
     await client.send_message(message.from_user.id, msg, parse_mode="html")
-
-
-# pylint: disable = R0912, R0915,R0914
 
 
 async def download_from_bot(client, message):
@@ -1671,7 +1627,7 @@ async def download_from_bot(client, message):
 
 async def get_forward_task_node(
     client,
-    message: pyrogram.types.Message,
+    message,
     task_type: TaskType,
     src_chat_link: str,
     dst_chat_link: str,
@@ -1748,7 +1704,7 @@ async def get_forward_task_node(
         upload_telegram_chat_id=dst_chat_id,
         reply_message_id=last_reply_message.id,
         replay_message=last_reply_message.text,
-        has_protected_content=src_chat.has_protected_content,
+        has_protected_content=is_protected_chat(src_chat),
         download_filter=download_filter,
         limit=limit,
         start_offset_id=offset_id,
@@ -1760,17 +1716,18 @@ async def get_forward_task_node(
     )
 
     if target_msg_id and reply_comment:
-        node.reply_to_message = await _bot.client.get_discussion_message(
-            dst_chat_id, target_msg_id
-        )
+        try:
+            node.reply_to_message = await get_discussion_message(
+                _bot.client, dst_chat_id, target_msg_id
+            )
+        except Exception as e:
+            logger.warning(f"get_discussion_message failed: {e}")
 
     _bot.add_task_node(node)
 
     node.upload_user = _bot.client
-    if dst_chat.type is not pyrogram.enums.ChatType.BOT:
-        has_permission = await check_user_permission(_bot.client, me.id, dst_chat.id)
-        if has_permission:
-            node.upload_user = _bot.bot
+    if not is_bot_user(dst_chat):
+        node.upload_user = _bot.bot
 
     if node.upload_user is _bot.client:
         await client.edit_message_text(
@@ -1783,13 +1740,12 @@ async def get_forward_task_node(
     return node
 
 
-# pylint: disable = R0914
-async def forward_message_impl(reply_comment: bool):
+async def forward_message_impl(client, message, reply_comment: bool):
     """
     Forward message
     """
 
-    async def report_error(message: pyrogram.types.Message):
+    async def report_error(message):
         """Report error"""
 
         await client.send_message(
@@ -1853,13 +1809,13 @@ async def forward_message_impl(reply_comment: bool):
     if not node.has_protected_content:
         forward_failed = False
         try:
-            async for item in get_chat_history_v2(  # type: ignore
+            async for item in iter_chat_messages(
                 _bot.client,
                 node.chat_id,
-                limit=node.limit,
+                min_id=offset_id,
                 max_id=node.end_offset_id,
-                offset_id=offset_id,
                 reverse=True,
+                limit=node.limit or None,
             ):
                 await forward_normal_content(client, node, item)
                 # Update progress for crash recovery
@@ -1889,13 +1845,13 @@ async def forward_message_impl(reply_comment: bool):
         complete_task(node.task_id)
 
 
-async def forward_messages(message: pyrogram.types.Message):
+async def forward_messages(client, message):
     """
     Forwards messages from one chat to another.
 
     Parameters:
-        client (pyrogram.Client): The pyrogram client.
-        message (pyrogram.types.Message): The message containing the command.
+        client: Telethon client.
+        message: Telegram message.
 
     Returns:
         None
@@ -1903,10 +1859,9 @@ async def forward_messages(message: pyrogram.types.Message):
     return await forward_message_impl(client, message, False)
 
 
-async def forward_normal_content(node: TaskNode):
+async def forward_normal_content(client, node: TaskNode, message):
     """Forward normal content"""
-    forward_ret = ForwardStatus.FailedForward
-    caption = message.caption
+    caption = getattr(message, "caption", None) or getattr(message, "text", None) or ""
     if caption:
         caption = validate_title(caption)
         _bot.app.set_caption_name(node.chat_id, message.media_group_id, caption)
@@ -1914,26 +1869,17 @@ async def forward_normal_content(node: TaskNode):
         caption = _bot.app.get_caption_name(node.chat_id, message.media_group_id)
 
     if caption and _bot.app.is_match_advertisement(caption):
-        forward_ret = ForwardStatus.SkipForward
         if message.media_group_id:
-            # TODO
             node.upload_status[message.id] = UploadStatus.SkipUpload
         return
 
-    if node.download_filter:
-        meta_data = MetaData()
-        set_meta_data(meta_data, message, caption)
-        _bot.filter.set_meta_data(meta_data)
-        if not _bot.filter.exec(node.download_filter):
-            forward_ret = ForwardStatus.SkipForward
-            if message.media_group_id:
-                node.upload_status[message.id] = UploadStatus.SkipUpload
-                await proc_cache_forward(_bot.client, node, message, False, _bot.app)
-            await report_bot_forward_status(client, node, forward_ret)
-            return
-
-    await upload_telegram_chat_message(
-        _bot.client, node.upload_user, _bot.app, node, message
+    reply_to = getattr(node.reply_to_message, "id", None)
+    await forward_one(
+        node.upload_user or _bot.client,
+        node.upload_telegram_chat_id,
+        message,
+        node.chat_id,
+        reply_to=reply_to,
     )
 
 
@@ -1947,7 +1893,7 @@ async def forward_msg(node: TaskNode, message_id: int):
     await _bot.download_chat_task(_bot.client, chat_download_config, node)
 
 
-# Global flood wait cooldown is now unified in pyrogram_extension._unified_flood_wait
+# Flood wait cooldown: hermes_telegram_downloader.module.tg.errors
 
 
 async def _consume_one_pending():
@@ -2019,11 +1965,15 @@ async def _consume_one_pending():
         if not client:
             return
 
-        # Check unified flood wait cooldown (shared with edit_message, download_media)
+        from hermes_telegram_downloader.module.tg.errors import (
+            get_flood_wait_remaining,
+            is_flood_wait,
+            is_flood_wait_active,
+            set_flood_wait,
+            wait_seconds_from_flood,
+        )
+
         if is_flood_wait_active():
-            from hermes_telegram_downloader.module.pyrogram_extension import (
-                get_flood_wait_remaining,
-            )
 
             remaining = int(get_flood_wait_remaining())
             logger.debug(
@@ -2033,7 +1983,7 @@ async def _consume_one_pending():
 
         try:
             cid = int(chat_id)
-        except ValueError, TypeError:
+        except (ValueError, TypeError):
             cid = chat_id
 
         # Mark as consuming (in get_messages phase, counts towards concurrency guard)
@@ -2057,8 +2007,8 @@ async def _consume_one_pending():
                         _pending_timeout_counts.get(task_id, 0) + 1
                     )
                     consecutive = _pending_timeout_counts[task_id]
-                    from hermes_telegram_downloader.module.pyrogram_extension import (
-                        _unified_flood_wait,
+                    from hermes_telegram_downloader.module.tg.errors import (
+                        set_flood_wait,
                     )
 
                     if consecutive >= 3:
@@ -2087,15 +2037,17 @@ async def _consume_one_pending():
                             pass
                         remove_task(task_id)
                         # 触发 client 重连 — 连续超时说明 TCP 已死
-                        from media_downloader import _maybe_reconnect_client
+                        from hermes_telegram_downloader.media_downloader import (
+                            _maybe_reconnect_client,
+                        )
 
                         asyncio.create_task(_maybe_reconnect_client())
                         return
                     # 未达3次，保持 pending，设递增 cooldown
                     backoff = 60 * consecutive  # 60s, 120s, 180s
-                    _unified_flood_wait["until"] = time.time() + backoff + 5
-                    _unified_flood_wait["reason"] = (
-                        f"get_messages 超时疑似限速 chat {cid} msg {msg_id} (第{consecutive}次)"
+                    set_flood_wait(
+                        backoff + 5,
+                        f"get_messages 超时疑似限速 chat {cid} msg {msg_id} (第{consecutive}次)",
                     )
                     logger.warning(
                         f"Pending consumer: get_messages TIMEOUT (300s) for chat {cid} msg {msg_id}, "
@@ -2113,49 +2065,36 @@ async def _consume_one_pending():
                         except Exception:
                             pass
                     return
-                except pyrogram.errors.exceptions.flood_420.FloodWait as e:
-                    # Don't move to failed list — keep pending, set unified cooldown
-                    wait_val = getattr(e, "value", 60)
-                    from hermes_telegram_downloader.module.pyrogram_extension import (
-                        _unified_flood_wait,
-                    )
-
-                    _unified_flood_wait["until"] = time.time() + wait_val + 5
-                    _unified_flood_wait["reason"] = (
-                        f"FloodWait {wait_val}s on get_messages chat {cid} msg {msg_id}"
-                    )
-                    logger.warning(
-                        f"Pending consumer: FLOOD_WAIT {wait_val}s on get_messages "
-                        f"(chat {cid} msg {msg_id}), pausing consumer. Task stays pending."
-                    )
-                    # Notify user about rate limit pause
-                    if from_user_id and _bot and _bot.bot:
-                        try:
-                            notify_text = (
-                                f"⏸️ TG 限速暂停\n"
-                                f"需要等待 {wait_val} 秒\n"
-                                f"任务: {extra.get('task_id_display', str(task_id))} 保持待执行\n"
-                                f"原因: FloodWait (get_messages)"
-                            )
-                            await _bot.bot.send_message(int(from_user_id), notify_text)
-                        except Exception:
-                            pass
-                    return
                 except Exception as e:
-                    # 防御性检测：如果异常是 TimeoutError 类型，按限速处理
+                    if is_flood_wait(e):
+                        wait_val = wait_seconds_from_flood(e) or 60
+                        set_flood_wait(
+                            wait_val + 5,
+                            f"FloodWait {wait_val}s on get_messages chat {cid} msg {msg_id}",
+                        )
+                        logger.warning(
+                            f"Pending consumer: FLOOD_WAIT {wait_val}s on get_messages "
+                            f"(chat {cid} msg {msg_id}), pausing consumer. Task stays pending."
+                        )
+                        if from_user_id and _bot and _bot.bot:
+                            try:
+                                await _bot.bot.send_message(
+                                    int(from_user_id),
+                                    f"⏸️ TG 限速暂停\n需要等待 {wait_val} 秒\n"
+                                    f"任务: {extra.get('task_id_display', str(task_id))} 保持待执行",
+                                )
+                            except Exception:
+                                pass
+                        return
                     if isinstance(e, TimeoutError):
                         _pending_timeout_counts[task_id] = (
                             _pending_timeout_counts.get(task_id, 0) + 1
                         )
                         consecutive = _pending_timeout_counts[task_id]
                         backoff = 60 * consecutive
-                        from hermes_telegram_downloader.module.pyrogram_extension import (
-                            _unified_flood_wait,
-                        )
-
-                        _unified_flood_wait["until"] = time.time() + backoff + 5
-                        _unified_flood_wait["reason"] = (
-                            f"get_messages 连接超时疑似限速 chat {cid} msg {msg_id} (第{consecutive}次)"
+                        set_flood_wait(
+                            backoff + 5,
+                            f"get_messages 连接超时疑似限速 chat {cid} msg {msg_id} (第{consecutive}次)",
                         )
                         logger.warning(
                             f"Pending consumer: TimeoutError for chat {cid} msg {msg_id}: {e}, "
@@ -2187,7 +2126,9 @@ async def _consume_one_pending():
                             except Exception:
                                 pass
                             remove_task(task_id)
-                            from media_downloader import _maybe_reconnect_client
+                            from hermes_telegram_downloader.media_downloader import (
+                                _maybe_reconnect_client,
+                            )
 
                             asyncio.create_task(_maybe_reconnect_client())
                         return  # 保持 pending，不 remove_task
@@ -2214,7 +2155,7 @@ async def _consume_one_pending():
                         pass
                     remove_task(task_id)
                     return
-            if not msg or msg.empty:
+            if not msg:
                 logger.warning(
                     f"Pending consumer: msg {msg_id} not found in chat {cid}, moving to failed"
                 )
@@ -2280,7 +2221,7 @@ async def _consume_one_pending():
         node.is_running = True
 
         # Create placeholder in _download_result so WebUI shows the task immediately.
-        # Pyrogram's update_download_status will overwrite total_size/file_name/down_byte
+        # update_download_status will overwrite total_size/file_name/down_byte
         # when the actual download starts.
         # Set total_size=1 (not 0) so web.py doesn't filter it out as a "placeholder"
         # entry. WebUI will show "获取文件信息中..." until real size arrives.
@@ -2368,7 +2309,7 @@ async def _pending_consumer_loop():
             logger.warning(f"Pending consumer loop error: {e}")
 
 
-async def set_listen_forward_msg(message: pyrogram.types.Message):
+async def set_listen_forward_msg(client, message):
     """
     Set the chat to listen for forwarded messages.
     """
@@ -2416,86 +2357,34 @@ async def stop(client, message):
     await client.send_message(message.from_user.id, _t("Stopped"))
 
 
-async def stop_task(
-    client,
-    query: pyrogram.types.CallbackQuery,
-    queryHandler: str,
-    task_type: TaskType,
-):
+async def stop_task(client, query, queryHandler: str, task_type: TaskType):
     """Stop task"""
     if query.data == queryHandler:
-        buttons: list[InlineKeyboardButton] = []
-        temp_buttons: list[InlineKeyboardButton] = []
-        for key, value in _bot.task_node.copy().items():
-            if not value.is_finish() and value.task_type is task_type:
-                if len(temp_buttons) == 3:
-                    buttons.append(temp_buttons)
-                    temp_buttons = []
-                temp_buttons.append(
-                    InlineKeyboardButton(
-                        f"{key}", callback_data=f"{queryHandler} task {key}"
-                    )
-                )
-        if temp_buttons:
-            buttons.append(temp_buttons)
-
-        if buttons:
-            buttons.insert(
-                0,
-                [
-                    InlineKeyboardButton(
-                        _t("all"), callback_data=f"{queryHandler} task all"
-                    )
-                ],
-            )
-            await client.edit_message_text(
-                query.message.from_user.id,
-                query.message.id,
-                f"{_t('Stop')} {_t(task_type.name)}...",
-                reply_markup=InlineKeyboardMarkup(buttons),
-            )
-        else:
-            await client.edit_message_text(
-                query.message.from_user.id,
-                query.message.id,
-                f"{_t('No Task')}",
-            )
-    else:
-        task_id = query.data.split(" ")[2]
-        await client.edit_message_text(
-            query.message.from_user.id,
-            query.message.id,
-            f"{_t('Stop')} {_t(task_type.name)}...",
-        )
-        _bot.stop_task(task_id)
+        _bot.stop_task("all")
+        return
+    parts = str(query.data).split()
+    if len(parts) >= 3:
+        _bot.stop_task(parts[2])
 
 
-async def on_query_handler(query: pyrogram.types.CallbackQuery):
-    """
-    Asynchronous function that handles query callbacks.
-
-    Parameters:
-        client (pyrogram.Client): The Pyrogram client object.
-        query (pyrogram.types.CallbackQuery): The callback query object.
-
-    Returns:
-        None
-    """
-
+async def on_query_handler(query):
+    """Callback query handler (not registered until CallbackQuery events are wired)."""
+    data = getattr(query, "data", "") or ""
     for it in QueryHandler:
         queryHandler = QueryHandlerStr.get_str(it.value)
-        if queryHandler in query.data:
-            await stop_task(client, query, queryHandler, TaskType(it.value))
+        if queryHandler in data:
+            await stop_task(None, query, queryHandler, TaskType(it.value))
+            return
 
 
-async def forward_to_comments(message: pyrogram.types.Message):
+async def forward_to_comments(client, message):
     """
     Forwards specified media to a designated comment section.
 
     Usage: /forward_to_comments <source_chat_link> <destination_chat_link> <msg_start_id> <msg_end_id>
 
     Parameters:
-        client (pyrogram.Client): The pyrogram client.
-        message (pyrogram.types.Message): The message containing the command.
+        client: Telethon client.
+        message: Telegram message.
     """
     return await forward_message_impl(client, message, True)

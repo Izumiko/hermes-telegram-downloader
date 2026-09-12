@@ -10,7 +10,7 @@ def test_proxy_from_config_none():
     assert proxy_from_config({}) is None
 
 
-def test_proxy_from_config_pyrogram_shape():
+def test_proxy_from_config_yaml_shape():
     assert proxy_from_config(
         {"scheme": "socks5", "hostname": "127.0.0.1", "port": 1080}
     ) == {

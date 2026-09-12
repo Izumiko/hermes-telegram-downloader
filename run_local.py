@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 本地开发专用 - 独立 Flask Web UI + Mock 数据
-不依赖项目中的 module/web.py, 不依赖 pyrogram
+不依赖项目中的 module/web.py, 不依赖 Telethon
 用法: python run_local.py
 访问: http://localhost:5000
 """

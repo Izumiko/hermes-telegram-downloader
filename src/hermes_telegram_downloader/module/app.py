@@ -21,7 +21,6 @@ from hermes_telegram_downloader.utils.format import replace_date_time, validate_
 from hermes_telegram_downloader.utils.meta_data import MetaData
 
 _yaml = yaml.YAML()
-# pylint: disable = R0902
 
 
 class DownloadStatus(Enum):
@@ -455,7 +454,6 @@ class Application:
             min(32, (os.cpu_count() or 0) + 4), thread_name_prefix="multi_task"
         )
 
-    # pylint: disable = R0915
     def assign_config(self, _config: dict) -> bool:
         """assign config from str.
 
@@ -468,7 +466,7 @@ class Application:
         -------
         bool
         """
-        # pylint: disable = R0912
+
         # TODO: judge the storage if enough,and provide more path
         if _config.get("save_path") is not None:
             self.save_path = _config["save_path"]
@@ -665,7 +663,6 @@ class Application:
                     self._chat_id
                 ]
 
-        # pylint: disable = R1733
         for key, value in self.chat_download_config.items():
             self.chat_download_config[key].download_filter = replace_date_time(
                 value.download_filter
@@ -857,7 +854,6 @@ class Application:
 
         return True
 
-    # pylint: disable = R0912
     def update_config(self, immediate: bool = True):
         """update config
 
@@ -872,9 +868,8 @@ class Application:
                 {"chat_id": i} for i in range(0, len(self.config["chat"]))
             ]
         idx = 0
-        # pylint: disable = R1733
+
         for key, value in self.chat_download_config.items():
-            # pylint: disable = W0201
             unfinished_ids = set(value.ids_to_retry)
 
             for it in value.ids_to_retry:

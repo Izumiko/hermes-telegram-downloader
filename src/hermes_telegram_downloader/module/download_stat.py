@@ -30,7 +30,7 @@ _failed_downloads: list = []
 _chat_titles: dict = {}  # chat_id -> chat_title mapping
 _download_lock: asyncio.Lock = asyncio.Lock()  # 保护 _download_result / _total_download_speed / _failed_downloads 等全局变量的并发访问
 
-# 任务进度心跳 — 每次 Pyrogram 进度回调更新，worker watchdog 检测长时间无进度
+# 任务进度心跳 — 每次 Telethon 进度回调更新，worker watchdog 检测长时间无进度
 # 只杀"死任务"（连接断了，无任何数据回调），不杀"慢任务"（有回调但在慢下载）
 _task_heartbeat: dict = {}  # composite_key → last progress timestamp
 _TASK_HEARTBEAT_TIMEOUT = 300  # 5 分钟无进度回调判定为死连接
@@ -69,7 +69,7 @@ def get_total_download_speed() -> int:
     This replaces the old independent global accumulator approach which used a separate
     time window from individual task speeds, causing the total to never equal the sum of
     individual speeds. Now we simply sum the per-task speeds, with a staleness check:
-    if a task's speed hasn't been updated in 3 seconds (no Pyrogram callback), treat it as 0.
+    if a task's speed hasn't been updated in 3 seconds (no progress callback), treat it as 0.
     """
     import time as _time
 
@@ -103,7 +103,6 @@ def get_download_state() -> DownloadState:
     return _download_state
 
 
-# pylint: disable = W0603
 def set_download_state(state: DownloadState):
     """set download state"""
     global _download_state
@@ -320,7 +319,7 @@ async def update_download_status(
 ):
     """update_download_status"""
     cur_time = time.time()
-    # pylint: disable = W0603
+
     global _total_download_speed
     global _total_download_size
     global _last_download_time
@@ -487,7 +486,7 @@ async def update_download_status(
     # === 静默限速通知（锁外发送，避免 await 阻塞锁）===
     if _throttle_action == "notify" and node.bot and getattr(node, "from_user_id", ""):
         # 静默限速检测到 — 打通重连机制：递增错误计数并触发 client 重连
-        # 不中断当前下载（让 Pyrogram 继续尝试），但如果连接确实死了，
+        # 不中断当前下载（让 Telethon 继续尝试），但如果连接确实死了，
         # 后续 TimeoutError 会走 download_media 的 except handler 正常重试
         try:
             from media_downloader import _client_conn_errors, _maybe_reconnect_client
@@ -521,9 +520,7 @@ async def update_download_status(
     if _placeholder_resolved and node.bot:
         node.last_progress_pct = -1  # 重置进度桶，让 0~20% 也能触发更新
         try:
-            from hermes_telegram_downloader.module.pyrogram_extension import (
-                report_bot_status,
-            )
+            from hermes_telegram_downloader.module.tg.bot_api import report_bot_status
 
             await report_bot_status(node.bot, node, immediate_reply=True)
         except ImportError:
@@ -533,9 +530,7 @@ async def update_download_status(
     if node.bot and not node.initial_progress_reported and down_byte > 0:
         node.initial_progress_reported = True
         try:
-            from hermes_telegram_downloader.module.pyrogram_extension import (
-                report_bot_status,
-            )
+            from hermes_telegram_downloader.module.tg.bot_api import report_bot_status
 
             await report_bot_status(node.bot, node)
         except ImportError:

@@ -67,10 +67,9 @@ RETRY_TIME_OUT = 3
 
 # ── Client connection error tracking & auto-reconnect ──
 # When download_media hits connection-level errors (TimeoutError, OSError,
-# FILE_REFERENCE_EXPIRED) consecutively, the Pyrogram session's underlying
+# FILE_REFERENCE_EXPIRED) consecutively, the Telethon session's underlying
 # TCP connection is likely in a "half-dead" state — socket is alive but
-# no data flows. Pyrogram's internal retry (3x) uses the same dead socket,
-# so all retries fail. Auto-reconnect forces client.stop()+start() to build
+# no data flows. Auto-reconnect forces disconnect()+connect() to build
 # a fresh TCP connection + MTProto session, mirroring the manual fix of
 # toggling the v2rayA node.
 _client_conn_errors = {"count": 0}
@@ -634,7 +633,7 @@ async def download_task(client, message, node: TaskNode):
                 source_link = f"https://t.me/c/{link_id}/{message.id}"
         _add_failed_download(
             chat_id=node.chat_id,
-            msg_id=message.id if message else message_id,
+            msg_id=message.id if message else 0,
             task_id=task_id_display,
             file_name=file_name or "",
             error_message=error_message or "下载失败",
@@ -647,28 +646,37 @@ async def download_task(client, message, node: TaskNode):
             delete_download_result_entry as _ddre,
         )
 
-        _ddre(node.chat_id, message.id if message else message_id)
+        _ddre(node.chat_id, message.id if message else 0)
     elif download_status is DownloadStatus.SkipDownload:
         # Remove placeholder from active download list
         from hermes_telegram_downloader.module.download_stat import (
             delete_download_result_entry as _ddre,
         )
 
-        _ddre(node.chat_id, message.id if message else message_id)
+        _ddre(node.chat_id, message.id if message else 0)
     try:
-        from hermes_telegram_downloader.module.pyrogram_extension import (
-            upload_telegram_chat,
-        )
+        from hermes_telegram_downloader.module.tg.send import send_downloaded
 
-        await upload_telegram_chat(
-            client,
-            node.upload_user if node.upload_user else client,
-            app,
-            node,
-            message,
-            download_status,
-            file_name,
-        )
+        if (
+            node.upload_telegram_chat_id
+            and download_status is DownloadStatus.SuccessDownload
+            and file_name
+        ):
+            caption = (
+                getattr(message, "caption", None)
+                or getattr(message, "text", None)
+                or ""
+            )
+            if caption and app.is_match_advertisement(caption):
+                caption = ""
+            reply_to = getattr(getattr(node, "reply_to_message", None), "id", None)
+            await send_downloaded(
+                node.upload_user if node.upload_user else client,
+                node.upload_telegram_chat_id,
+                file_name,
+                caption=caption,
+                reply_to=reply_to,
+            )
     except ImportError:
         pass
     if (
@@ -683,19 +691,16 @@ async def download_task(client, message, node: TaskNode):
         ):
             node.upload_success_count += 1
     try:
-        from hermes_telegram_downloader.module.pyrogram_extension import (
-            report_bot_download_status,
-        )
+        from hermes_telegram_downloader.module.tg.bot_api import report_bot_status
 
-        await report_bot_download_status(node.bot, node, download_status, file_size)
+        if node.bot:
+            await report_bot_status(node.bot, node)
     except ImportError:
         pass
     # Send final status with full stats immediately for single downloads
     if node.bot and node.is_finish() and not node.is_stop_transmission:
         try:
-            from hermes_telegram_downloader.module.pyrogram_extension import (
-                report_bot_status,
-            )
+            from hermes_telegram_downloader.module.tg.bot_api import report_bot_status
 
             await report_bot_status(node.bot, node, immediate_reply=True)
         except ImportError:
@@ -727,7 +732,7 @@ async def download_media(
     """
     file_name: str = ""
     ui_file_name: str = ""
-    task_start_time: float = time.time()
+    _task_start_time: float = time.time()
     media_size = 0
     _media = None
     error_message = ""  # Track specific error reason
@@ -790,21 +795,6 @@ async def download_media(
             f"Message[{message.id}]: no media found in message, skipping download"
         )
         return DownloadStatus.SkipDownload, None, ""
-    # Build source link from message for failed downloads
-    source_link = ""
-    if message and message.chat:
-        chat_id_for_link = message.chat.id
-        # For private chats (user bot), use username if available
-        if hasattr(message.chat, "username") and message.chat.username:
-            source_link = f"https://t.me/{message.chat.username}/{message.id}"
-        else:
-            # For channels/supergroups, use c/ prefix
-            # Remove -100 prefix for channels
-            if str(chat_id_for_link).startswith("-100"):
-                link_id = str(chat_id_for_link)[4:]
-            else:
-                link_id = str(chat_id_for_link)
-            source_link = f"https://t.me/c/{link_id}/{message.id}"
 
     message_id = message.id
     total_wait = 0
@@ -832,7 +822,7 @@ async def download_media(
                 _client_conn_errors["count"] = 0  # Reset on success
                 return DownloadStatus.SuccessDownload, file_name, ""
             else:
-                # download_media returned None or non-str — Pyrogram couldn't fetch
+                # download_media returned None or non-str — Telethon couldn't fetch
                 # without raising. Log details and set error_message for user.
                 reason = (
                     "下载返回为空"
@@ -1047,7 +1037,7 @@ async def download_media(
             error_message = f"下载异常: {error_str[:100]}"
             break
     # 修复：失败前检查文件是否已落盘
-    # 场景1: pyrogram 已将文件写入 temp 但在返回前抛了异常
+    # 场景1: Telethon 已将文件写入 temp 但在返回前抛了异常
     if temp_file_name and os.path.exists(temp_file_name):
         temp_size = os.path.getsize(temp_file_name)
         if media_size > 0 and temp_size >= media_size:
@@ -1114,7 +1104,7 @@ async def worker(client):
 
     进度心跳机制：download_task 在独立 Task 中执行，watchdog 每 30s 检查
     _task_heartbeat。如果某任务超过 _TASK_HEARTBEAT_TIMEOUT(300s) 没有任何
-    Pyrogram 进度回调，说明连接已死（不是慢），cancel 该任务释放 worker。
+    Telethon 进度回调，说明连接已死（不是慢），cancel 该任务释放 worker。
     慢下载（有进度回调）不受影响。
     """
     from hermes_telegram_downloader.module.download_stat import (
@@ -1126,7 +1116,7 @@ async def worker(client):
     while app.is_running:
         global _active_downloads
         try:
-            logger.info(f"Worker waiting for queue item...")
+            logger.info("Worker waiting for queue item...")
             item = await queue.get()
             message = item[0]
             node: TaskNode = item[1]
@@ -1326,22 +1316,6 @@ async def download_chat_task(
                 await add_download_task(message, node)
         else:
             node.download_status[message.id] = DownloadStatus.SkipDownload
-            if grouped_id:
-                try:
-                    from hermes_telegram_downloader.module.pyrogram_extension import (
-                        upload_telegram_chat,
-                    )
-
-                    await upload_telegram_chat(
-                        client,
-                        node.upload_user,
-                        app,
-                        node,
-                        message,
-                        DownloadStatus.SkipDownload,
-                    )
-                except ImportError:
-                    pass
         # Update task progress for crash recovery
         update_task_progress(node.task_id, message.id)
         # 降低 last_read_message_id 更新频率：每 200 条消息持久化一次
@@ -1451,7 +1425,7 @@ async def _reconnect_client():
             error_str = str(e)
             if "database is locked" in error_str:
                 logger.warning(
-                    f"client.connect() failed with database is locked, forcing release and retrying..."
+                    "client.connect() failed with database is locked, forcing release and retrying..."
                 )
                 _force_release_session_lock(client)
                 try:

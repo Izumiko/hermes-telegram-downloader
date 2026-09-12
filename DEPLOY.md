@@ -154,7 +154,7 @@ environment:
   - https_proxy=socks5://你的代理IP:端口
 ```
 
-或者在 `config.yaml` 中配置 Pyrogram 代理：
+或者在 `config.yaml` 中配置 Telethon 代理：
 
 ```yaml
 proxy:

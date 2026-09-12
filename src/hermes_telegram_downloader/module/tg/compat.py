@@ -15,10 +15,13 @@ def wrap_message(msg):
         def __init__(self, m):
             self._m = m
             self.id = m.id
-            self.text = m.message or ""
-            self.media = m.media
-            self.from_user = _User(m.sender_id)
-            chat_id = getattr(m, "chat_id", None) or m.sender_id
+            self.text = getattr(m, "message", None) or getattr(m, "text", None) or ""
+            media = getattr(m, "media", None)
+            self.caption = self.text if media else None
+            self.media = media
+            self.media_group_id = getattr(m, "grouped_id", None)
+            self.from_user = _User(getattr(m, "sender_id", None))
+            chat_id = getattr(m, "chat_id", None) or getattr(m, "sender_id", None)
             self.chat = SimpleNamespace(id=chat_id)
             self.forward_from_chat = None
             self.forward_from_message_id = 0

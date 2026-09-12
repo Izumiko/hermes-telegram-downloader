@@ -16,7 +16,6 @@ from loguru import logger
 from hermes_telegram_downloader.utils import platform
 
 
-# pylint: disable = R0902
 class CloudDriveConfig:
     """Rclone Config"""
 
@@ -88,7 +87,6 @@ class CloudDrive:
 
         return zip_file_name
 
-    # pylint: disable = R0914
     @staticmethod
     async def rclone_upload_file(
         drive_config: CloudDriveConfig,
