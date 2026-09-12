@@ -15,7 +15,6 @@ _fix_*.py
 # Distribution / packaging
 .Python
 .pytest_cache
-.python-version
 env/
 build/
 develop-eggs/
