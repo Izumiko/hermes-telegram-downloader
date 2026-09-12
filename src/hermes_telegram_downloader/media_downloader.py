@@ -771,14 +771,12 @@ async def download_media(
                             f"{_t('already download,download skipped')}."
                         )
                         return DownloadStatus.SkipDownload, None, ""
-                    elif file_size > 0:
-                        # 先重命名原文件为 .bak，下载成功后再删除备份
-                        backup_path = file_name + ".bak"
-                        os.replace(file_name, backup_path)
+                    elif 0 < file_size < media_size:
+                        os.makedirs(os.path.dirname(temp_file_name), exist_ok=True)
+                        os.replace(file_name, temp_file_name)
                         logger.info(
                             f"id={message.id} {ui_file_name} "
-                            f"{_t('File exists but size mismatch')}: "
-                            f"{file_size} != {media_size}, {_t('re-downloading')}."
+                            f"partial file {file_size}/{media_size}, resuming"
                         )
             else:
                 return DownloadStatus.SkipDownload, None, ""

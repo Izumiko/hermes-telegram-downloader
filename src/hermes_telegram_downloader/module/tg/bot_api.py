@@ -95,26 +95,6 @@ async def report_bot_status(bot, node, immediate_reply=False):
     text = build_bot_status_text(node, get_download_result())
     if text == node.last_edit_msg:
         return
-    if not immediate_reply:
-        total = 0
-        weighted = 0
-        result = get_download_result()
-        if node.chat_id in result:
-            for value in result[node.chat_id].values():
-                if not _task_matches(value, node):
-                    continue
-                ts = value.get("total_size", 0) or 0
-                if ts > 1:
-                    total += ts
-                    weighted += value.get("down_byte", 0) or 0
-        current_pct = int(weighted / total * 100) if total > 0 else 0
-        bucket = (current_pct // 20) * 20
-        prev = (
-            (node.last_progress_pct // 20) * 20 if node.last_progress_pct >= 0 else -1
-        )
-        if bucket == prev and node.last_progress_pct >= 0:
-            return
-        node.last_progress_pct = current_pct
     try:
         await bot.edit_message_text(node.from_user_id, node.reply_message_id, text)
         node.last_edit_msg = text
