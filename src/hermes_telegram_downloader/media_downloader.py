@@ -450,7 +450,9 @@ async def _get_media_meta(
         temp_file_name = os.path.join(app.temp_save_path, dirname, file_name)
         file_name = os.path.join(file_save_path, file_name)
     else:
-        file_name = _media_file_name(media_obj)
+        from hermes_telegram_downloader.module.tg.media import media_filename
+
+        file_name = _media_file_name(media_obj) or media_filename(message)
         caption = _message_caption(message)
         grouped_id = _message_grouped_id(message)
 
@@ -473,10 +475,6 @@ async def _get_media_meta(
             )
         else:
             caption = app.get_caption_name(chat_id, grouped_id)
-
-        if not file_name and getattr(message, "photo", None):
-            photo = message.photo
-            file_name = f"{getattr(photo, 'file_unique_id', None) or getattr(photo, 'id', 'photo')}"
 
         gen_file_name = (
             app.get_file_name(message.id, file_name, caption) + file_name_suffix

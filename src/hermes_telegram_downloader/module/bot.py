@@ -408,13 +408,7 @@ class DownloadBot:
             except Exception:
                 pass
 
-            # Start periodic pending consumer loop (60s interval)
-            if (
-                not hasattr(self, "_pending_loop_started")
-                or not self._pending_loop_started
-            ):
-                self.app.loop.create_task(_pending_consumer_loop())
-                self._pending_loop_started = True
+            self._ensure_pending_consumer()
 
             # Kick off first consumption immediately
             self.app.loop.create_task(_consume_one_pending())
@@ -601,6 +595,14 @@ class DownloadBot:
 
         return True
 
+    def _ensure_pending_consumer(self):
+        """Always run the pending loop so new direct downloads are consumed."""
+        if getattr(self, "_pending_loop_started", False):
+            return
+        self.app.loop.create_task(_pending_consumer_loop())
+        self._pending_loop_started = True
+        logger.info("Pending consumer loop started")
+
     def update_config(self):
         """Update config from str."""
         self.config["download_filter"] = self.download_filter
@@ -702,6 +704,7 @@ class DownloadBot:
             logger.warning(f"Failed to send help message: {e}")
 
         self.reply_task = _bot.app.loop.create_task(_bot.update_reply_message())
+        self._ensure_pending_consumer()
         _bot.app.loop.create_task(_bot.recover_tasks())
         if self.app.chat_download_config:
             self._register_listen_handler()
@@ -2234,7 +2237,7 @@ async def _consume_one_pending():
                 "down_byte": 0,
                 "total_size": 1,  # Non-zero so web.py doesn't hide this entry
                 "progress": 0,
-                "file_name": "获取文件信息中...",
+                "file_name": "获取文件信息中...",  # overwritten on first progress callback
                 "start_time": time.time(),
                 "end_time": 0,
                 "download_speed": 0,

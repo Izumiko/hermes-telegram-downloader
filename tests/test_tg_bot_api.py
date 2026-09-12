@@ -69,3 +69,24 @@ def test_wrap_message_sender():
     assert w.text == "hello"
     assert w.from_user.id == 111
     assert w.media is None
+
+
+def test_pending_consumer_starts_without_recovery_tasks():
+    from hermes_telegram_downloader.module.bot import DownloadBot
+
+    bot = DownloadBot()
+
+    class _Loop:
+        def __init__(self):
+            self.n = 0
+
+        def create_task(self, coro):
+            self.n += 1
+            coro.close()
+
+    bot.app = SimpleNamespace(loop=_Loop())
+    bot._ensure_pending_consumer()
+    assert bot._pending_loop_started is True
+    assert bot.app.loop.n == 1
+    bot._ensure_pending_consumer()
+    assert bot.app.loop.n == 1

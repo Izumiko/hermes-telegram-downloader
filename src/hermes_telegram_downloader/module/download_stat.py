@@ -327,10 +327,9 @@ async def update_download_status(
     message_id = getattr(message, "id", 0)
     chat_id = node.chat_id
     existing = (_download_result.get(chat_id) or {}).get(message_id) or {}
-    file_name = existing.get("file_name") or ""
-    if not file_name:
-        file_obj = getattr(message, "file", None)
-        file_name = getattr(file_obj, "name", None) or str(message_id)
+    from hermes_telegram_downloader.module.tg.media import resolve_result_file_name
+
+    file_name = resolve_result_file_name(existing.get("file_name") or "", message)
     start_time = existing.get("start_time") or cur_time
 
     if node.is_stop_transmission:
