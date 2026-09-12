@@ -9,9 +9,10 @@
 import json
 import os
 
+from flask import Flask, Response, jsonify, render_template, request
+
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-from flask import Flask, Response, jsonify, render_template, request
 
 app = Flask(
     __name__,

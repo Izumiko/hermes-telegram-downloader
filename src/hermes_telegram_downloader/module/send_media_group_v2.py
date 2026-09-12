@@ -5,7 +5,6 @@ import os
 import re
 from collections.abc import Callable
 from datetime import datetime
-from typing import List, Optional, Union
 
 import pyrogram
 from pyrogram import raw, types, utils

@@ -2,7 +2,7 @@
 
 import re
 from datetime import datetime
-from typing import Any, Optional, Tuple
+from typing import Any
 
 from ply import lex, yacc
 

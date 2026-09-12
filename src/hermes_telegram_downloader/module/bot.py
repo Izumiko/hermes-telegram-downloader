@@ -5,7 +5,6 @@ import os
 import time
 from collections.abc import Callable
 from datetime import datetime
-from typing import List, Union
 
 import pyrogram
 from loguru import logger
@@ -277,7 +276,7 @@ class DownloadBot:
         _bot_reconnect_cooldown = 300  # 5 min between reconnect attempts
         _bot_last_reconnect = 0.0
         while self.is_running:
-            for key, value in self.task_node.copy().items():
+            for _key, value in self.task_node.copy().items():
                 if value.is_running:
                     await report_bot_status(self.bot, value)
 

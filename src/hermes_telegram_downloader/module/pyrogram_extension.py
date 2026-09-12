@@ -12,7 +12,6 @@ from datetime import datetime
 from functools import wraps
 from io import BytesIO, StringIO
 from mimetypes import MimeTypes
-from typing import List, Optional, Tuple, Union
 
 import pyrogram
 from loguru import logger
@@ -1206,7 +1205,7 @@ async def _report_bot_status(
         failed_files_str = ""
         download_result = get_download_result()
         if node.chat_id in download_result:
-            for idx, value in download_result[node.chat_id].items():
+            for _idx, value in download_result[node.chat_id].items():
                 task_id = value.get("task_id", "")
                 if (
                     str(task_id) == str(node.task_id)
@@ -1252,7 +1251,7 @@ async def _report_bot_status(
         actual_success = 0
         actual_failed = 0
         if node.chat_id in download_result:
-            for mid, val in download_result[node.chat_id].items():
+            for _mid, val in download_result[node.chat_id].items():
                 if str(val.get("task_id", "")) == str(node.task_id):
                     actual_total += 1
                     if val["down_byte"] == val["total_size"] and val["total_size"] > 0:
@@ -1331,7 +1330,7 @@ async def _report_bot_status(
                 weighted = 0
                 download_result = get_download_result()
                 if node.chat_id in download_result:
-                    for idx, value in download_result[node.chat_id].items():
+                    for _idx, value in download_result[node.chat_id].items():
                         tid = str(value.get("task_id", ""))
                         if tid == str(node.task_id) or tid == str(node.task_id_display):
                             ts = value.get("total_size", 0)
