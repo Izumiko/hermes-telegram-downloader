@@ -4,6 +4,30 @@ from telethon import TelegramClient
 
 USER_SESSION_NAME = "media_downloader_telethon"
 BOT_SESSION_NAME = "media_downloader_bot_telethon"
+USER_SESSION_BOT_ERROR = (
+    "用户客户端当前是 Bot 账号。请删除 "
+    f"sessions/{USER_SESSION_NAME}.session 后重新运行，"
+    "登录时输入手机号（不要填写 bot token）。Bot token 只用于 config.yaml 的 bot_token。"
+)
+
+
+def looks_like_bot_token(value: str) -> bool:
+    if not value or ":" not in value:
+        return False
+    prefix, _, _token = value.strip().partition(":")
+    return prefix.isdigit() and len(prefix) >= 5
+
+
+def prompt_user_phone() -> str:
+    value = input("请输入手机号（不要填写 bot token）: ").strip()
+    if looks_like_bot_token(value):
+        raise ValueError(USER_SESSION_BOT_ERROR)
+    return value
+
+
+def assert_not_bot_user(me) -> None:
+    if getattr(me, "bot", False):
+        raise RuntimeError(USER_SESSION_BOT_ERROR)
 
 
 def proxy_from_config(proxy: dict | None) -> dict | None:

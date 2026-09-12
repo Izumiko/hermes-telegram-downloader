@@ -48,6 +48,14 @@ class _Expired:
     pass
 
 
+def test_looks_like_bot_token():
+    from hermes_telegram_downloader.module.tg.client import looks_like_bot_token
+
+    assert looks_like_bot_token("123456789:AAHxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+    assert not looks_like_bot_token("+8613800138000")
+    assert not looks_like_bot_token("")
+
+
 def test_is_file_ref_expired():
     from telethon.errors import FileReferenceExpiredError
 

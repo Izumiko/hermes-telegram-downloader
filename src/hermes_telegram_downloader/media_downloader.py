@@ -35,7 +35,9 @@ from hermes_telegram_downloader.module.task_store import (
 )
 from hermes_telegram_downloader.module.tg.client import (
     USER_SESSION_NAME,
+    assert_not_bot_user,
     create_user_client,
+    prompt_user_phone,
 )
 from hermes_telegram_downloader.module.tg.download import download_message_media
 from hermes_telegram_downloader.module.tg.errors import (
@@ -1380,7 +1382,10 @@ def _exec_loop():
 async def start_server(client):
     """Start the server"""
     _main_client_ref["client"] = client
-    await client.start()
+    await client.start(phone=prompt_user_phone)
+    me = await client.get_me()
+    assert_not_bot_user(me)
+    logger.info(f"User session logged in as {getattr(me, 'username', None) or me.id}")
 
 
 async def _reconnect_client():
