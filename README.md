@@ -98,7 +98,7 @@
 
 - **多语言** — 中文 / 英文 / 俄语 / 乌克兰语
 - **rclone 云盘上传** — 下载完成后可选上传到云盘
-- **代理支持** — Pyrogram 原生代理 + Docker 环境变量代理
+- **代理支持** — Telethon 原生代理 + Docker 环境变量代理
 - **本地开发模式** — `run_local.py` 无需 Telegram 账号，Mock 数据调试 WebUI
 - **日志分离** — `tdl.log`（主日志）+ `download.log`（下载日志），10MB 轮转，保留 30 天
 
@@ -112,7 +112,7 @@
 │                                                       │
 │  ┌──────────┐   ┌──────────────┐   ┌──────────────┐ │
 │  │ Bot (TG) │   │  WebUI :5000 │   │  Worker Pool │ │
-│  │ Pyrogram │   │   Flask      │   │  (N workers) │ │
+│  │ Telethon │   │   Flask      │   │  (N workers) │ │
 │  └────┬─────┘   └──────┬───────┘   └──────┬───────┘ │
 │       │                │                   │         │
 │       │    ┌───────────┼───────────────────┘         │
@@ -152,7 +152,7 @@
 ### 核心流程
 
 1. **用户发命令** → Bot handler 创建 TaskNode → `save_task()` 持久化 → `add_download_task()` 入队
-2. **Worker 从队列取任务** → `download_task()` → `download_media()` → Pyrogram 下载
+2. **Worker 从队列取任务** → `download_task()` → `download_media()` → Telethon 下载
 3. **进度回调** → `update_download_status()` 更新 `_download_result` → 20% 里程碑触发 Bot 通知
 4. **下载完成** → `complete_task()` 从持久化移除 → `save_downloads()` 写入历史
 5. **下载失败** → `add_failed_download()` 记入失败列表 → WebUI 可重试
@@ -173,14 +173,9 @@ _pending_consumer_loop() 每 5 秒：
     └─ 填充最多 max_download_task 个 pending 任务到 worker 队列
 ```
 
-### TCP 超时补丁
+### FloodWait
 
-Pyrogram 默认 `TCP.TIMEOUT=10s`，在 TG 限速时导致连接拆除 + MTProto 重新握手，产生大量上传流量。补丁改为 900 秒：
-
-```python
-from pyrogram.connection.transport.tcp import TCP as _TCP
-_TCP.TIMEOUT = 900
-```
+Telethon 客户端使用 `flood_sleep_threshold=0`，不自动 sleep。限速由项目内统一冷却（`module/tg/errors.py`）处理，WebUI 展示剩余时间。
 
 ---
 
@@ -208,22 +203,26 @@ docker-compose logs -f
 
 ### 手动安装
 
+需要 [uv](https://docs.astral.sh/uv/) 与 Python 3.14+（uv 会自动管理 Python 版本）：
+
 ```bash
 git clone https://github.com/MangoIsIllegal/hermes-telegram-downloader.git
 cd hermes-telegram-downloader
-pip install -r requirements.txt
+uv sync
 
 cp config.yaml.example config.yaml
 # 编辑 config.yaml...
 
-python media_downloader.py
+uv run media-downloader
 ```
+
+首次运行会创建 `sessions/media_downloader_telethon.session`，需完成 Telegram 验证码登录。旧的 Pyrogram `.session` 文件不会被读取或覆盖。
 
 ### 本地开发模式
 
 ```bash
 # 无需 Telegram 账号，Mock 数据启动 WebUI
-python run_local.py
+uv run python run_local.py
 # 访问 http://localhost:5000
 ```
 
@@ -401,6 +400,7 @@ git pull && docker-compose build && docker-compose up -d
 | `./downloads/` | 下载的文件 |
 | `./config.yaml` | 配置文件 |
 | `./data.yaml` | 运行时数据（ids_to_retry 等） |
+| `./bot.yaml` | Bot 过滤器等运行时配置 |
 | `./log/` | 日志 + 任务持久化（bot_tasks.json / task_counter.json / download_history.json） |
 | `./sessions/` | Telegram session 文件 |
 | `./temp/` | 下载临时文件 |
@@ -415,7 +415,7 @@ git pull && docker-compose build && docker-compose up -d
 
 | 模块 | 说明 |
 |------|------|
-| `module/task_store.py` | 任务持久化 + 崩溃恢复，JSON 存储，原子写入，线程安全 |
+| `src/hermes_telegram_downloader/module/task_store.py` | 任务持久化 + 崩溃恢复，JSON 存储，原子写入，线程安全 |
 | `run_local.py` | 本地开发模式，Mock 数据，无需 Telegram |
 
 ### 核心改动
@@ -453,4 +453,4 @@ git pull && docker-compose build && docker-compose up -d
 ## 致谢
 
 - 原项目：[tangyoha/telegram_media_downloader](https://github.com/tangyoha/telegram_media_downloader)
-- Pyrogram：[pyrogram](https://github.com/pyrogram/pyrogram)
+- Telethon：[Telethon](https://github.com/LonamiWebs/Telethon)

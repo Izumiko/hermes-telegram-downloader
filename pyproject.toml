@@ -1,0 +1,60 @@
+[project]
+name = "hermes-telegram-downloader"
+version = "1.0.0"
+description = "Telegram 媒体下载 / 转发 / 监听工具，带任务持久化 + 崩溃恢复 + 现代 WebUI"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.14"
+dependencies = [
+    "pyyaml>=6.0.2",
+    "rich>=13.0",
+    "loguru>=0.7",
+    "werkzeug>=3.0",
+    "flask>=3.0",
+    "ply>=3.11",
+    "ruamel.yaml>=0.18",
+    "flask-login>=0.6.3",
+    "pycryptodome>=3.20",
+    "requests>=2.32",
+    "telethon>=1.38",
+    "cryptg>=0.4",
+    "pysocks>=1.7",
+    "python-socks[asyncio]>=2.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16",
+    "pytest>=9.0",
+]
+
+[project.scripts]
+media-downloader = "hermes_telegram_downloader.media_downloader:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hermes_telegram_downloader"]
+
+[tool.ruff]
+target-version = "py314"
+src = ["src"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]
+# ignore = ["E501", "F401", "F841", "F811", "F541"]
+
+# [tool.ruff.lint.per-file-ignores]
+# "src/hermes_telegram_downloader/media_downloader.py" = ["F821"]
+# "src/hermes_telegram_downloader/module/bot.py" = ["F821"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
