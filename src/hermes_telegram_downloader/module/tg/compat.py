@@ -34,11 +34,12 @@ def wrap_message(msg):
                         pid = get_peer_id(peer)
                     except Exception:
                         pid = None
-                    self.forward_from_chat = SimpleNamespace(
-                        id=pid,
-                        title=getattr(fwd, "from_name", None) or "",
-                        username=None,
-                    )
+                    if pid is not None:
+                        self.forward_from_chat = SimpleNamespace(
+                            id=pid,
+                            title=getattr(fwd, "from_name", None) or "",
+                            username=None,
+                        )
 
         def __getattr__(self, name):
             return getattr(self._m, name)

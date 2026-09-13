@@ -755,7 +755,10 @@ class DownloadBot:
             elif text.startswith("https://t.me"):
                 await download_from_link(self.bot, msg)
             elif msg.media:
-                await download_forward_media(self.bot, msg)
+                try:
+                    await download_forward_media(self.bot, msg)
+                except Exception as e:
+                    logger.exception(f"download_forward_media failed: {e}")
 
         logger.info("Telethon bot NewMessage dispatcher registered")
 
@@ -1378,104 +1381,72 @@ async def direct_download(
     # concurrency guard is always respected.
 
 
+async def fetch_media_message(client, chat_id, msg_id, timeout=15):
+    if not client or not chat_id or not msg_id:
+        return None
+    try:
+        msg = await asyncio.wait_for(
+            client.get_messages(chat_id, msg_id), timeout=timeout
+        )
+    except Exception as e:
+        logger.warning(f"Forward: fetch {chat_id}/{msg_id} failed: {e}")
+        return None
+    if msg and getattr(msg, "media", None):
+        return msg
+    return None
+
+
 async def download_forward_media(client, message):
-    """
-    Downloads the media from a forwarded message.
-
-    Parameters:
-        client: Telethon client.
-        message: Telegram message.
-
-    Returns:
-        None
-    """
-
-    if message.media:
-        # If forwarded from a channel/group, download from source
-        if message.forward_from_chat:
-            source_chat_id = message.forward_from_chat.id
-            source_message_id = message.forward_from_message_id or 0
-            source_chat_title = message.forward_from_chat.title or ""
-
-            download_message = None
-            if source_message_id:
-                source_msg = await retry(
-                    _bot.client.get_messages,
-                    args=(source_chat_id, source_message_id),
-                )
-                if source_msg and source_msg.media:
-                    await direct_download(
-                        _bot,
-                        source_chat_id,
-                        message,
-                        source_msg,
-                        client,
-                        source_chat_id=source_chat_id,
-                        source_message_id=source_message_id,
-                        source_chat_title=source_chat_title,
-                    )
-                    return
-                # Source message deleted or no media — try link-based fetch
-                # The forwarded message's file reference may be stale. Construct
-                # a link and use parse_link → get_messages to get a fresh copy.
-                logger.info(
-                    f"Forward: source msg {source_message_id} has no media, "
-                    f"trying link-based fetch"
-                )
-                try:
-                    from hermes_telegram_downloader.module.tg.bot_api import parse_link
-
-                    # Build source link: private channels use /c/, public use /username/
-                    fwd_chat = message.forward_from_chat
-                    if fwd_chat.username:
-                        link_str = (
-                            f"https://t.me/{fwd_chat.username}/{source_message_id}"
-                        )
-                    else:
-                        link_id = str(source_chat_id)
-                        if link_id.startswith("-100"):
-                            link_id = link_id[4:]
-                        link_str = f"https://t.me/c/{link_id}/{source_message_id}"
-                    link_chat_id, link_msg_id, _ = await parse_link(
-                        _bot.client, link_str
-                    )
-                    if link_chat_id and link_msg_id:
-                        download_message = await retry(
-                            _bot.client.get_messages,
-                            args=(link_chat_id, link_msg_id),
-                        )
-                        if download_message and download_message.media:
-                            logger.info(
-                                f"Forward: link-based fetch succeeded for "
-                                f"{link_chat_id}/{link_msg_id}"
-                            )
-                            await direct_download(
-                                _bot,
-                                link_chat_id,
-                                message,
-                                download_message,
-                                client,
-                                source_chat_id=source_chat_id,
-                                source_message_id=source_message_id,
-                                source_chat_title=source_chat_title,
-                            )
-                            return
-                except Exception as e:
-                    logger.warning(f"Forward: link-based fetch failed: {e}")
-
-            # All fallbacks failed — fall through to direct download with the
-            # original forwarded message (last resort)
-            await direct_download(_bot, message.from_user.id, message, message, client)
-            return
-
-        # Direct upload or forward from user (no source channel info)
-        await direct_download(_bot, message.from_user.id, message, message, client)
+    if not message.media:
+        await client.send_message(
+            message.from_user.id,
+            f"1. {_t('Direct download, directly forward the message to your robot')}\n\n",
+            parse_mode="html",
+        )
         return
 
-    await client.send_message(
-        message.from_user.id,
-        f"1. {_t('Direct download, directly forward the message to your robot')}\n\n",
-        parse_mode="html",
+    source_chat_id = 0
+    source_message_id = 0
+    source_chat_title = ""
+    download_message = None
+    download_chat_id = message.from_user.id
+
+    if message.forward_from_chat:
+        source_chat_id = message.forward_from_chat.id
+        source_message_id = message.forward_from_message_id or 0
+        source_chat_title = message.forward_from_chat.title or ""
+        if source_chat_id and source_message_id:
+            download_message = await fetch_media_message(
+                _bot.client, source_chat_id, source_message_id
+            )
+            if download_message:
+                download_chat_id = source_chat_id
+                logger.info(
+                    f"Forward: using source {source_chat_id}/{source_message_id}"
+                )
+
+    if download_message is None:
+        bot_id = getattr(getattr(_bot, "bot_info", None), "id", None)
+        if bot_id and message.id:
+            download_message = await fetch_media_message(
+                _bot.client, bot_id, message.id
+            )
+            if download_message:
+                download_chat_id = bot_id
+                logger.info(f"Forward: fallback to bot chat copy {bot_id}/{message.id}")
+        if download_message is None:
+            download_message = message
+            logger.info("Forward: fallback to bot forwarded media")
+
+    await direct_download(
+        _bot,
+        download_chat_id,
+        message,
+        download_message,
+        client,
+        source_chat_id=source_chat_id or 0,
+        source_message_id=source_message_id or 0,
+        source_chat_title=source_chat_title,
     )
 
 
