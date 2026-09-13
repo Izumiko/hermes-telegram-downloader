@@ -1,53 +1,62 @@
-api_hash: your_api_hash
+# Telegram API 凭证（必填）
 api_id: your_api_id
-bot_token: your_bot_token
-#chat:
-#- chat_id: telegram_chat_id
-#  last_read_message_id: 0
-#  download_filter: message_date >= 2022-12-01 00:00:00 and message_date <= 2023-01-17 00:00:00
-#- chat_id: telegram_chat_id_2
-#  last_read_message_id: 0
-# 我们将ids_to_retry移到data.yaml
-ids_to_retry: []
+api_hash: your_api_hash
+bot_token: your_bot_token  # Bot Token，用于 Bot 命令交互
+
+# 媒体类型
 media_types:
-- audio
-- document
-- photo
-- video
-- voice
-- animation #gif
+  - audio
+  - document
+  - photo
+  - video
+  - voice
+  - animation
+
+# 文件格式过滤（all = 所有格式）
 file_formats:
   audio:
-  - all
+    - all
   document:
-  - pdf
-  - epub
+    - pdf
+    - epub
   video:
-  - mp4
+    - mp4
+
+# 下载设置
 save_path: /app/downloads
 file_path_prefix:
-#- chat_title
-#- media_datetime
+  - chat_title
+  - media_datetime
+file_name_prefix:
+  - file_name
+hide_file_name: false
+
 #upload_drive:
 #  enable_upload_file: false
 #  remote_dir: drive:/telegram
 #  before_upload_file_zip: True
 #  after_upload_file_delete: True
-hide_file_name: false
-file_name_prefix:
-- file_name
-#file_name_prefix_split: ' - '
-max_download_task: 5
+
+# 并发控制
+max_download_task: 5  # worker 数量
+
+# WebUI
 web_host: 0.0.0.0
 web_port: 5000
-web_login_secret: 123
+web_login_secret: 123  # 登录密钥（当前未强制验证）
+
+# 权限
 allowed_user_ids:
-- 'me'
-date_format: ''
-enable_download_txt: false
+  - 'me'  # 'me' = 当前登录账号
+
+# 其他
 language: ZH
+date_format: '%Y_%m'
+enable_download_txt: false
+log_level: DEBUG
+
+# 代理（Docker 内访问宿主机代理）
 proxy:
   scheme: http
   hostname: 172.17.0.1
   port: 20172
-log_level: DEBUG
