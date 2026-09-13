@@ -47,25 +47,30 @@ def proxy_from_config(proxy: dict | None) -> dict | None:
     }
 
 
-def create_user_client(app) -> TelegramClient:
-    os.makedirs(app.session_file_path, exist_ok=True)
-    session_path = os.path.join(app.session_file_path, USER_SESSION_NAME)
+def _new_telegram_client(session_path: str, app, proxy: dict | None) -> TelegramClient:
+    if proxy:
+        return TelegramClient(
+            session_path,
+            api_id=int(app.api_id),
+            api_hash=str(app.api_hash),
+            proxy=proxy,
+            flood_sleep_threshold=0,
+        )
     return TelegramClient(
         session_path,
         api_id=int(app.api_id),
         api_hash=str(app.api_hash),
-        proxy=proxy_from_config(app.proxy) or None,
         flood_sleep_threshold=0,
     )
+
+
+def create_user_client(app) -> TelegramClient:
+    os.makedirs(app.session_file_path, exist_ok=True)
+    session_path = os.path.join(app.session_file_path, USER_SESSION_NAME)
+    return _new_telegram_client(session_path, app, proxy_from_config(app.proxy))
 
 
 def create_bot_client(app) -> TelegramClient:
     os.makedirs(app.session_file_path, exist_ok=True)
     session_path = os.path.join(app.session_file_path, BOT_SESSION_NAME)
-    return TelegramClient(
-        session_path,
-        api_id=int(app.api_id),
-        api_hash=str(app.api_hash),
-        proxy=proxy_from_config(app.proxy) or None,
-        flood_sleep_threshold=0,
-    )
+    return _new_telegram_client(session_path, app, proxy_from_config(app.proxy))

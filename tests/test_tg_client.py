@@ -32,6 +32,7 @@ def test_proxy_keeps_auth():
             "password": "p",
         }
     )
+    assert out is not None
     assert out["username"] == "u"
     assert out["password"] == "p"
 
@@ -60,8 +61,8 @@ def test_is_file_ref_expired():
     from telethon.errors import FileReferenceExpiredError
 
     try:
-        err = FileReferenceExpiredError()
-    except TypeError:
         err = FileReferenceExpiredError(None)
+    except TypeError:
+        err = FileReferenceExpiredError()  # pyright: ignore[reportCallIssue]
     assert is_file_ref_expired(err)
     assert not is_file_ref_expired(RuntimeError("x"))

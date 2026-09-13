@@ -1,6 +1,6 @@
 [project]
 name = "hermes-telegram-downloader"
-version = "3.0.3"
+version = "3.0.4"
 description = "Telegram 媒体下载 / 转发 / 监听工具，带任务持久化 + 崩溃恢复 + 现代 WebUI"
 readme = "README.md"
 license = { text = "MIT" }
@@ -22,6 +22,7 @@ fast = ["cryptg>=0.4"]
 dev = [
     "ruff>=0.16",
     "pytest>=9.0",
+    "basedpyright>=1.40.1",
 ]
 
 [project.scripts]
@@ -54,3 +55,7 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.basedpyright]
+typeCheckingMode = "standard"
+pythonVersion = "3.14"

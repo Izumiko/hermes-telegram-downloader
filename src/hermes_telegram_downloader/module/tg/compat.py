@@ -4,7 +4,9 @@ from telethon.utils import get_peer_id
 
 
 def wrap_message(msg):
-    if msg is None or getattr(msg, "from_user", None) is not None:
+    if msg is None:
+        raise TypeError("cannot wrap None message")
+    if getattr(msg, "from_user", None) is not None:
         return msg
 
     class _User:

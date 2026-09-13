@@ -92,7 +92,7 @@ class CloudDrive:
         drive_config: CloudDriveConfig,
         save_path: str,
         local_file_path: str,
-        progress_callback: Callable = None,
+        progress_callback: Callable | None = None,
         progress_args: tuple = (),
     ) -> bool:
         """Use Rclone upload file"""
@@ -142,18 +142,16 @@ class CloudDrive:
                         )
                         transferred_match = re.search(pattern, s)
 
-                        if transferred_match:
-                            if progress_callback:
-                                func = functools.partial(
-                                    progress_callback,
-                                    transferred_match.group(1),
-                                    transferred_match.group(2),
-                                    transferred_match.group(3),
-                                    transferred_match.group(4),
-                                    transferred_match.group(5),
-                                    *progress_args,
-                                )
-
+                        if transferred_match and progress_callback:
+                            func = functools.partial(
+                                progress_callback,
+                                transferred_match.group(1),
+                                transferred_match.group(2),
+                                transferred_match.group(3),
+                                transferred_match.group(4),
+                                transferred_match.group(5),
+                                *progress_args,
+                            )
                             if inspect.iscoroutinefunction(progress_callback):
                                 await func()
                             else:

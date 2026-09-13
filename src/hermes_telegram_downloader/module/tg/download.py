@@ -26,7 +26,9 @@ async def _emit_progress(progress_callback, current, total):
         await result
 
 
-async def _resume_download(client, message, file_path, offset, total, progress_callback):
+async def _resume_download(
+    client, message, file_path, offset, total, progress_callback
+):
     raw = getattr(client, "_c", client)
     downloaded = offset
     os.makedirs(os.path.dirname(os.path.abspath(file_path)) or ".", exist_ok=True)
@@ -69,4 +71,6 @@ async def download_message_media(
                     total = _media_total_size(message)
                 continue
             raise
-    raise last_err
+    if last_err is not None:
+        raise last_err
+    raise RuntimeError("download failed")

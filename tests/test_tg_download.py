@@ -69,7 +69,7 @@ def test_iter_chat_messages():
     client = _FakeClient()
 
     async def _collect():
-        return [m.id async for m in iter_chat_messages(client, 123, min_id=5)]
+        return [m.id async for m in iter_chat_messages(client, 123, min_id=5) if m]
 
     ids = asyncio.run(_collect())
     assert ids == [6]

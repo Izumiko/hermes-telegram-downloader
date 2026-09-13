@@ -8,6 +8,7 @@ import shutil
 import sys
 import time
 from functools import wraps
+from typing import Any
 
 from loguru import logger
 from rich.logging import RichHandler
@@ -65,7 +66,7 @@ DATA_FILE_NAME = "data.yaml"
 APPLICATION_NAME = "media_downloader"
 app = Application(CONFIG_NAME, DATA_FILE_NAME, APPLICATION_NAME)
 
-queue: asyncio.Queue = None  # Created in main() after event loop starts
+queue: asyncio.Queue | None = None  # Created in main() after event loop starts
 RETRY_TIME_OUT = 3
 
 # ── Client connection error tracking & auto-reconnect ──
@@ -82,7 +83,7 @@ _client_last_reconnect = {"time": 0.0}
 _CLIENT_RECONNECT_COOLDOWN = 300  # 5 min between reconnect attempts
 _MAX_WATCHDOG_RETRIES = 2  # watchdog cancel 后最多重试次数
 _watchdog_retry_count = {}  # task_id → 已重试次数
-_main_client_ref = {"client": None}  # set in start_server()
+_main_client_ref: dict[str, Any] = {"client": None}  # set in start_server()
 _active_downloads = (
     0  # 内存计数器：当前正在下载的任务数（worker pick up +1, 完成/失败/cancel -1）
 )
@@ -307,7 +308,7 @@ async def fetch_message(client, message):
         return None
 
 
-def set_meta_data(meta_data: MetaData, message, caption: str = None):
+def set_meta_data(meta_data: MetaData, message, caption: str | None = None):
     meta_data.message_date = getattr(message, "date", None)
     if caption:
         meta_data.message_caption = caption
@@ -713,6 +714,7 @@ async def download_task(client, message, node: TaskNode):
     if (
         not node.upload_telegram_chat_id
         and download_status is DownloadStatus.SuccessDownload
+        and file_name
     ):
         ui_file_name = file_name
         if app.hide_file_name:
@@ -763,6 +765,7 @@ async def download_media(
     """
     file_name: str = ""
     ui_file_name: str = ""
+    temp_file_name: str = ""
     _task_start_time: float = time.time()
     media_size = 0
     _media = None
@@ -794,9 +797,7 @@ async def download_media(
                 ui_file_name = f"****{os.path.splitext(file_name)[-1]}"
 
             if not _can_download(_type, file_formats, file_format):
-                logger.info(
-                    f"Message[{message.id}]: skip {_type} format {file_format}"
-                )
+                logger.info(f"Message[{message.id}]: skip {_type} format {file_format}")
                 _media = None
                 continue
             if _is_exist(file_name):
@@ -831,6 +832,9 @@ async def download_media(
     message_id = message.id
     total_wait = 0
     for retry in range(3):
+        if message is None:
+            error_message = error_message or "消息不存在或已被删除"
+            break
         try:
             temp_download_path = await download_message_media(
                 client,
@@ -883,6 +887,9 @@ async def download_media(
                     if error_message:
                         error_message = f"{error_message}（重试3次后失败）"
         except Exception as err:
+            if message is None:
+                error_message = error_message or "消息不存在或已被删除"
+                break
             if is_file_ref_expired(err):
                 _cleanup_temp_file(temp_file_name)
                 logger.warning(
@@ -934,7 +941,9 @@ async def download_media(
                             f"文件: {ui_file_name}\n"
                             f"需等待 {wait_s} 秒后自动重试"
                         )
-                        await node.bot.send_message(int(node.from_user_id), notify_text)
+                        await node.bot.send_message(
+                            int(node.from_user_id or 0), notify_text
+                        )
                     except Exception:
                         pass
                 await asyncio.sleep(wait_s)
@@ -953,7 +962,9 @@ async def download_media(
                             f"任务: {getattr(node, 'task_id_display', str(node.task_id))}\n"
                             f"文件: {ui_file_name}"
                         )
-                        await node.bot.send_message(int(node.from_user_id), resume_text)
+                        await node.bot.send_message(
+                            int(node.from_user_id or 0), resume_text
+                        )
                     except Exception:
                         pass
                 continue
@@ -993,7 +1004,9 @@ async def download_media(
                             f"暂停 {backoff} 秒后自动重试\n"
                             f"原因: Request timed out (非FloodWait)"
                         )
-                        await node.bot.send_message(int(node.from_user_id), notify_text)
+                        await node.bot.send_message(
+                            int(node.from_user_id or 0), notify_text
+                        )
                     except Exception:
                         pass
                 await asyncio.sleep(backoff)
@@ -1001,8 +1014,11 @@ async def download_media(
                     message = await fetch_message(client, message)
                 except Exception as fetch_err:
                     logger.warning(
-                        f"Message[{message.id}]: fetch_message 也超时: {fetch_err}"
+                        f"Message[{message_id}]: fetch_message 也超时: {fetch_err}"
                     )
+                if message is None:
+                    error_message = "连接超时后消息不可用"
+                    break
                 error_message = f"连接超时疑似限速（等待{backoff}秒后重试）"
                 continue
             if isinstance(err, OSError):
@@ -1076,24 +1092,24 @@ async def download_media(
             try:
                 _move_to_download_path(temp_file_name, file_name)
                 logger.info(
-                    f"Message[{message.id}] {ui_file_name}: 下载实际已完成(temp {temp_size}字节)"
+                    f"Message[{message_id}] {ui_file_name}: 下载实际已完成(temp {temp_size}字节)"
                 )
                 return DownloadStatus.SkipDownload, file_name, ""
             except Exception as e:
-                logger.warning(f"Message[{message.id}]: 移动已完成文件失败: {e}")
+                logger.warning(f"Message[{message_id}]: 移动已完成文件失败: {e}")
     _cleanup_temp_file(temp_file_name)
     # 场景2: 目标文件已存在（可能被并发任务或之前的成功下载写入）
     if file_name and _is_exist(file_name):
         file_size = os.path.getsize(file_name)
         if media_size > 0 and file_size >= media_size:
             logger.info(
-                f"Message[{message.id}] {ui_file_name}: 文件已存在({file_size}字节)，标记为跳过"
+                f"Message[{message_id}] {ui_file_name}: 文件已存在({file_size}字节)，标记为跳过"
             )
             return DownloadStatus.SkipDownload, None, ""
     # Log the specific failure reason before returning
     final_reason = error_message or "下载失败（未知原因）"
     logger.warning(
-        f"Message[{message.id}] {ui_file_name}: download failed after 3 retries, reason: {final_reason}"
+        f"Message[{message_id}] {ui_file_name}: download failed after 3 retries, reason: {final_reason}"
     )
     return DownloadStatus.FailedDownload, None, final_reason
 
@@ -1150,17 +1166,19 @@ async def worker(client):
 
     while app.is_running:
         global _active_downloads
+        assert queue is not None
+        node: TaskNode | None = None
+        message = None
+        _requeued = False
         try:
             logger.info("Worker waiting for queue item...")
             item = await queue.get()
             message = item[0]
-            node: TaskNode = item[1]
+            node = item[1]
+            assert node is not None
             _active_downloads += 1  # 并发计数 +1
             logger.info(
                 f"Worker picked up message {message.id} from chat {node.chat_id} for task {node.task_id_display} (active={_active_downloads})"
-            )
-            _requeued = (
-                False  # 标记是否重新入队（重新入队时不 decrement，因为新 worker 会 +1）
             )
             # Mark task as actively downloading (no longer pending/in-queue)
             if node.task_id:
@@ -1256,6 +1274,8 @@ async def worker(client):
             logger.exception(
                 f"Worker exception for task {getattr(node, 'task_id_display', '?')}: {e}"
             )
+            if node is None:
+                continue
             # ConnectionError 说明 client 已 stopped，先尝试重连+重试
             error_str = str(e)
             if (
@@ -1321,45 +1341,47 @@ async def download_chat_task(
             skipped_messages = [skipped_messages]
         for message in skipped_messages:
             await add_download_task(message, node)
-    async for message in messages_iter:
-        # 让出控制权，避免阻塞 handler
-        await asyncio.sleep(0)
+        async for message in messages_iter:
+            if message is None:
+                continue
+            # 让出控制权，避免阻塞 handler
+            await asyncio.sleep(0)
 
-        # Cache chat title from message
-        if message and message.chat:
-            chat_title = getattr(message.chat, "title", None) or getattr(
-                message.chat, "first_name", None
+            # Cache chat title from message
+            if message.chat:
+                chat_title = getattr(message.chat, "title", None) or getattr(
+                    message.chat, "first_name", None
+                )
+                if chat_title:
+                    set_chat_title(message.chat.id, chat_title)
+            meta_data = MetaData()
+            caption = _message_caption(message)
+            grouped_id = _message_grouped_id(message)
+            if caption:
+                caption = validate_title(caption)
+                app.set_caption_name(node.chat_id, grouped_id, caption)
+                app.set_caption_entities(
+                    node.chat_id, grouped_id, _message_caption_entities(message)
+                )
+            else:
+                caption = app.get_caption_name(node.chat_id, grouped_id)
+            set_meta_data(meta_data, message, caption)
+            if app.need_skip_message(chat_download_config, message.id):
+                continue
+            if app.exec_filter(chat_download_config, meta_data):
+                if message.media:  # Only add to download queue if message has media
+                    await add_download_task(message, node)
+            else:
+                node.download_status[message.id] = DownloadStatus.SkipDownload
+            # Update task progress for crash recovery
+            update_task_progress(node.task_id, message.id)
+            # 降低 last_read_message_id 更新频率：每 200 条消息持久化一次
+            # 这样崩溃时最多重复扫描 200 条，而不是每条都更新
+            chat_download_config.last_read_message_id = max(
+                chat_download_config.last_read_message_id, message.id
             )
-            if chat_title:
-                set_chat_title(message.chat.id, chat_title)
-        meta_data = MetaData()
-        caption = _message_caption(message)
-        grouped_id = _message_grouped_id(message)
-        if caption:
-            caption = validate_title(caption)
-            app.set_caption_name(node.chat_id, grouped_id, caption)
-            app.set_caption_entities(
-                node.chat_id, grouped_id, _message_caption_entities(message)
-            )
-        else:
-            caption = app.get_caption_name(node.chat_id, grouped_id)
-        set_meta_data(meta_data, message, caption)
-        if app.need_skip_message(chat_download_config, message.id):
-            continue
-        if app.exec_filter(chat_download_config, meta_data):
-            if message.media:  # Only add to download queue if message has media
-                await add_download_task(message, node)
-        else:
-            node.download_status[message.id] = DownloadStatus.SkipDownload
-        # Update task progress for crash recovery
-        update_task_progress(node.task_id, message.id)
-        # 降低 last_read_message_id 更新频率：每 200 条消息持久化一次
-        # 这样崩溃时最多重复扫描 200 条，而不是每条都更新
-        chat_download_config.last_read_message_id = max(
-            chat_download_config.last_read_message_id, message.id
-        )
-        if message.id % 200 == 0:
-            app.update_config(immediate=True)
+            if message.id % 200 == 0:
+                app.update_config(immediate=True)
     # 扫描结束后保存最终位置，确保重启时从正确位置继续
     chat_download_config.need_check = True
     chat_download_config.total_task = node.total_task

@@ -10,9 +10,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from typing import Any
 
 from loguru import logger
 from ruamel import yaml
+from ruamel.yaml.comments import CommentedSeq
 
 from hermes_telegram_downloader.module.cloud_drive import CloudDrive, CloudDriveConfig
 from hermes_telegram_downloader.module.filter import Filter
@@ -121,19 +123,19 @@ class TaskNode:
     def __init__(
         self,
         chat_id: int | str,
-        from_user_id: int | str = None,
+        from_user_id: int | str | None = None,
         reply_message_id: int = 0,
-        replay_message: str = None,
-        upload_telegram_chat_id: int | str = None,
+        replay_message: str | None = None,
+        upload_telegram_chat_id: int | str | None = None,
         has_protected_content: bool = False,
-        download_filter: str = None,
+        download_filter: str | None = None,
         limit: int = 0,
         start_offset_id: int = 0,
         end_offset_id: int = 0,
         bot=None,
         task_type: TaskType = TaskType.Download,
         task_id: int = 0,
-        topic_id: int = 0,
+        topic_id: int | None = 0,
         task_id_display: str = "",
     ):
         self.chat_id = chat_id
@@ -146,7 +148,7 @@ class TaskNode:
         self.limit = limit
         self.start_offset_id = start_offset_id
         self.end_offset_id = end_offset_id
-        self.bot = bot
+        self.bot: Any = bot
         self.task_id = task_id
         self.task_type = task_type
         self.total_task = 0
@@ -165,13 +167,13 @@ class TaskNode:
         self.flood_wait_until: float = 0  # Non-blocking FLOOD_WAIT cooldown
         self.total_download_byte = 0
         self.forward_msg_detail_str: str = ""
-        self.upload_user = None
+        self.upload_user: Any = None
         self.total_forward_task: int = 0
         self.success_forward_task: int = 0
         self.failed_forward_task: int = 0
         self.skip_forward_task: int = 0
         self.is_running: bool = False
-        self.client = None
+        self.client: Any = None
         self.upload_success_count: int = 0
         self.is_stop_transmission = False
         self.media_group_ids: dict = {}
@@ -179,8 +181,8 @@ class TaskNode:
         self.download_status: dict = {}
         self.upload_status: dict = {}
         self.upload_stat_dict: dict = {}
-        self.topic_id = topic_id
-        self.reply_to_message = None
+        self.topic_id = topic_id or 0
+        self.reply_to_message: Any = None
         self.cloud_drive_upload_stat_dict: dict = {}
         self.source_chat_title: str = ""
         self.source_chat_id: int = 0
@@ -328,17 +330,17 @@ class ChatDownloadConfig:
         self.ids_to_retry_dict: dict = {}
 
         # need storage
-        self.download_filter: str = None
+        self.download_filter: str | None = None
         self.ids_to_retry: list = []
         self.last_read_message_id = 0
         self.total_task: int = 0
         self.finish_task: int = 0
         self.need_check: bool = False
-        self.upload_telegram_chat_id: int | str = None
+        self.upload_telegram_chat_id: int | str | None = None
         self.node: TaskNode = TaskNode(0)
 
 
-def get_config(config, key, default=None, val_type=str, verbose=True):
+def get_config(config, key, default=None, val_type: type = str, verbose=True):
     """
     Retrieves a configuration value from the given `config` dictionary
     based on the specified `key`.
@@ -432,18 +434,12 @@ class Application:
         self.debug_web: bool = False
         self.log_level: str = "INFO"
         self.start_timeout: int = 60
-        self.allowed_user_ids: yaml.comments.CommentedSeq = yaml.comments.CommentedSeq(
-            []
-        )
+        self.allowed_user_ids: CommentedSeq = CommentedSeq([])
         self.date_format: str = "%Y_%m"
         self.drop_no_audio_video: bool = False
         self.enable_download_txt: bool = False
-        self.filter_advertisement_list: yaml.comments.CommentedSeq = (
-            yaml.comments.CommentedSeq([])
-        )
-        self.replace_advertisement_list: yaml.comments.CommentedSeq = (
-            yaml.comments.CommentedSeq([])
-        )
+        self.filter_advertisement_list: CommentedSeq = CommentedSeq([])
+        self.replace_advertisement_list: CommentedSeq = CommentedSeq([])
         self.group_add_advertisement: dict = {}
         self.forward_limit_call = LimitCall(max_limit_call_times=33)
 
@@ -561,7 +557,7 @@ class Application:
             _config,
             "allowed_user_ids",
             self.allowed_user_ids,
-            yaml.comments.CommentedSeq,
+            CommentedSeq,
         )
 
         self.date_format = get_config(
@@ -583,14 +579,14 @@ class Application:
             _config,
             "filter_advertisement_list",
             self.filter_advertisement_list,
-            yaml.comments.CommentedSeq,
+            CommentedSeq,
         )
 
         self.replace_advertisement_list = get_config(
             _config,
             "replace_advertisement_list",
             self.replace_advertisement_list,
-            yaml.comments.CommentedSeq,
+            CommentedSeq,
         )
 
         if _config.get("group_add_advertisement"):
@@ -713,7 +709,7 @@ class Application:
     async def upload_file(
         self,
         local_file_path: str,
-        progress_callback: Callable = None,
+        progress_callback: Callable | None = None,
         progress_args: tuple = (),
     ) -> bool:
         """Upload file"""

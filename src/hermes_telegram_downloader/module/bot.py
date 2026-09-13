@@ -7,6 +7,7 @@ import os
 import time
 from collections.abc import Callable
 from datetime import datetime
+from typing import Any
 
 from loguru import logger
 from ruamel import yaml
@@ -215,11 +216,11 @@ class DownloadBot:
     """Download bot"""
 
     def __init__(self):
-        self.bot = None
-        self.client = None
-        self.add_download_task: Callable = None
-        self.download_chat_task: Callable = None
-        self.app = None
+        self.bot: Any = None
+        self.client: Any = None
+        self.add_download_task: Any = None
+        self.download_chat_task: Any = None
+        self.app: Any = None
         self.listen_forward_chat: dict = {}
         self.config: dict = {}
         self._yaml = yaml.YAML()
@@ -231,6 +232,9 @@ class DownloadBot:
         self.is_running = True
         self.allowed_user_ids: list[int | str] = []
         self._listen_handler_ref = None
+        self._consuming: set = set()
+        self.pending_consumer_task = None
+        self._pending_loop_started = False
 
         meta = MetaData(datetime(2022, 8, 5, 14, 35, 12), 0, "", 0, 0, 0, "", 0)
         self.filter.set_meta_data(meta)
@@ -316,10 +320,6 @@ class DownloadBot:
                         _record_pending_failures(value)
                     # Safety net: if media_downloader's immediate complete_task failed,
                     # ensure task is marked complete before removal
-                    from hermes_telegram_downloader.module.task_store import (
-                        complete_task,
-                    )
-
                     complete_task(value.task_id)
                     self.remove_task_node(key)
                     from hermes_telegram_downloader.module.task_store import (
@@ -659,6 +659,7 @@ class DownloadBot:
         self._listen_handler_ref = True
         logger.info("Listen handler registered on user client")
         return
+
     async def start(
         self,
         app: Application,
@@ -1607,7 +1608,7 @@ async def get_forward_task_node(
     dst_chat_link: str,
     offset_id: int = 0,
     end_offset_id: int = 0,
-    download_filter: str = None,
+    download_filter: str | None = None,
     reply_comment: bool = False,
 ):
     """Get task node"""
@@ -1732,7 +1733,7 @@ async def forward_message_impl(client, message, reply_comment: bool):
 
     args = message.text.split(maxsplit=5)
     if len(args) < 5:
-        await report_error(client, message)
+        await report_error(message)
         return
 
     src_chat_link = args[1]
@@ -1742,7 +1743,7 @@ async def forward_message_impl(client, message, reply_comment: bool):
         offset_id = int(args[3])
         end_offset_id = int(args[4])
     except Exception:
-        await report_error(client, message)
+        await report_error(message)
         return
 
     download_filter = args[5] if len(args) > 5 else None
@@ -1948,7 +1949,6 @@ async def _consume_one_pending():
         )
 
         if is_flood_wait_active():
-
             remaining = int(get_flood_wait_remaining())
             logger.debug(
                 f"Pending consumer: unified FLOOD_WAIT cooldown, {remaining}s remaining"
@@ -1957,7 +1957,7 @@ async def _consume_one_pending():
 
         try:
             cid = int(chat_id)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             cid = chat_id
 
         # Mark as consuming (in get_messages phase, counts towards concurrency guard)

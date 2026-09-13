@@ -14,4 +14,6 @@ async def iter_chat_messages(
     if limit:
         kwargs["limit"] = limit
     async for message in _raw(client).iter_messages(chat_id, **kwargs):
+        if message is None:
+            continue
         yield wrap_message(message)

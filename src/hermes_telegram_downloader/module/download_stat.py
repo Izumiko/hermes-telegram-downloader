@@ -488,7 +488,10 @@ async def update_download_status(
         # 不中断当前下载（让 Telethon 继续尝试），但如果连接确实死了，
         # 后续 TimeoutError 会走 download_media 的 except handler 正常重试
         try:
-            from media_downloader import _client_conn_errors, _maybe_reconnect_client
+            from hermes_telegram_downloader.media_downloader import (
+                _client_conn_errors,
+                _maybe_reconnect_client,
+            )
 
             _client_conn_errors["count"] += 3  # 加速触发重连（阈值10，+3 比每次+1快）
             asyncio.create_task(_maybe_reconnect_client())
@@ -496,7 +499,7 @@ async def update_download_status(
             pass
         try:
             await node.bot.send_message(
-                int(node.from_user_id),
+                int(node.from_user_id or 0),
                 "🐌 TG 下载疑似被限速\n"
                 f"任务: {getattr(node, 'task_id_display', str(node.task_id))}\n"
                 f"文件: {os.path.basename(file_name)}\n"
@@ -507,7 +510,7 @@ async def update_download_status(
     elif _throttle_action == "clear" and node.bot and getattr(node, "from_user_id", ""):
         try:
             await node.bot.send_message(
-                int(node.from_user_id),
+                int(node.from_user_id or 0),
                 "✅ TG 限速已解除\n"
                 f"任务: {getattr(node, 'task_id_display', str(node.task_id))}\n"
                 "下载速度恢复正常",

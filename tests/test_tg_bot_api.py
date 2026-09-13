@@ -21,7 +21,9 @@ def test_create_bot_client_uses_bot_session(tmp_path):
         proxy={},
     )
     client = create_bot_client(app)
-    assert BOT_SESSION_NAME in str(client.session.filename)
+    session = client.session
+    assert session is not None
+    assert BOT_SESSION_NAME in str(session.filename)
 
 
 def test_parse_link_public():

@@ -59,7 +59,13 @@ def run_web_server(app: Application):
     )
 
 
-_app: Application = None
+_app: Application | None = None
+
+
+def _require_app() -> Application:
+    if _app is None:
+        raise RuntimeError("web app not initialized")
+    return _app
 
 
 def init_web(app: Application):
@@ -187,7 +193,7 @@ def get_app_version():
 @_flask_app.route("/get_max_workers")
 def get_max_workers():
     """Get current max download task count"""
-    return jsonify(max_workers=_app.max_download_task)
+    return jsonify(max_workers=_require_app().max_download_task)
 
 
 @_flask_app.route("/set_max_workers", methods=["POST"])
@@ -196,11 +202,12 @@ def set_max_workers():
     n = request.args.get("n", type=int)
     if n is None or n < 1 or n > 6:
         return jsonify(error="n must be 1-6"), 400
-    _app.max_download_task = n
+    app = _require_app()
+    app.max_download_task = n
     # max_concurrent_transmissions follows max_download_task * 5
-    _app.max_concurrent_transmissions = n * 5
+    app.max_concurrent_transmissions = n * 5
     # Persist to config file
-    _app.update_config(True)
+    app.update_config(True)
     return jsonify(max_workers=n)
 
 
@@ -468,6 +475,7 @@ def web_check_file_exists():
 @_flask_app.route("/delete_task", methods=["POST"])
 def web_delete_task():
     """Delete a specific download task. If delete_file=true, also remove the local file."""
+
     def remove_download_cache(*_args, **_kwargs):
         return None
 
