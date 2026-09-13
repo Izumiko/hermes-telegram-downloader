@@ -21,6 +21,7 @@ temp/
 tests/
 docs/
 *.md
+!README.md
 config.yaml
 data.yaml
 bot.yaml

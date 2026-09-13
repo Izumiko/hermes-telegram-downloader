@@ -5,13 +5,12 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 
-RUN apk add --no-cache gcc musl-dev linux-headers
-
 COPY pyproject.toml uv.lock .python-version ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-install-project --no-dev
 
 COPY src ./src
+COPY README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev
 

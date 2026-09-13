@@ -1,26 +1,22 @@
 [project]
 name = "hermes-telegram-downloader"
-version = "3.0.0"
+version = "3.0.1"
 description = "Telegram 媒体下载 / 转发 / 监听工具，带任务持久化 + 崩溃恢复 + 现代 WebUI"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.14"
 dependencies = [
-    "pyyaml>=6.0.2",
     "rich>=13.0",
     "loguru>=0.7",
-    "werkzeug>=3.0",
     "flask>=3.0",
     "ply>=3.11",
     "ruamel.yaml>=0.18",
-    "flask-login>=0.6.3",
-    "pycryptodome>=3.20",
-    "requests>=2.32",
     "telethon>=1.38",
-    "cryptg>=0.4",
-    "pysocks>=1.7",
     "python-socks[asyncio]>=2.0",
 ]
+
+[project.optional-dependencies]
+fast = ["cryptg>=0.4"]
 
 [dependency-groups]
 dev = [
