@@ -5,6 +5,7 @@ import logging
 import mimetypes
 import os
 import shutil
+import sys
 import time
 from functools import wraps
 
@@ -1077,18 +1078,21 @@ def _check_config() -> bool:
     try:
         _load_config()
 
+        log_level = str(app.log_level).upper()
+        logger.remove()
+        logger.add(sys.stderr, level=log_level)
         logger.add(
             os.path.join(app.log_file_path, "tdl.log"),
             rotation="10 MB",
             retention="30 days",
-            level=app.log_level,
+            level=log_level,
         )
 
         logger.add(
             os.path.join(app.log_file_path, "download.log"),
             rotation="10 MB",
             retention="30 days",
-            level=app.log_level,
+            level=log_level,
             format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name}:{function}:{line} - {message}",
         )
 
