@@ -400,6 +400,7 @@ git pull && docker-compose build && docker-compose up -d
 | `./downloads/` | 下载的文件 |
 | `./config.yaml` | 配置文件 |
 | `./data.yaml` | 运行时数据（ids_to_retry 等） |
+| `./bot.yaml` | Bot 过滤器等运行时配置 |
 | `./log/` | 日志 + 任务持久化（bot_tasks.json / task_counter.json / download_history.json） |
 | `./sessions/` | Telegram session 文件 |
 | `./temp/` | 下载临时文件 |

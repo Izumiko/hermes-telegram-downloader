@@ -19,6 +19,7 @@ cd hermes-telegram-downloader
 
 ```bash
 cp config.yaml.example config.yaml
+touch data.yaml bot.yaml
 ```
 
 编辑 `config.yaml`：
@@ -72,6 +73,9 @@ services:
       - "5000:5000"
     environment:
       - TZ=Asia/Shanghai
+      # NAS 共享目录属主，用 `id` 查看；不设则默认 root
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
       # 如果需要代理，取消注释并修改为你的代理地址
       # - http_proxy=socks5://172.17.0.1:1080
       # - https_proxy=socks5://172.17.0.1:1080
@@ -81,6 +85,7 @@ services:
       # 配置文件
       - "./config.yaml:/app/config.yaml"
       - "./data.yaml:/app/data.yaml"
+      - "./bot.yaml:/app/bot.yaml"
       # 日志
       - "./log:/app/log/"
       # Telegram session
@@ -140,6 +145,7 @@ docker-compose ps
 | `./downloads/` | 下载的文件 |
 | `./config.yaml` | 配置文件 |
 | `./data.yaml` | 运行时数据（ids_to_retry 等） |
+| `./bot.yaml` | Bot 过滤器等运行时配置 |
 | `./log/` | 日志 + 任务持久化（bot_tasks.json / task_counter.json / download_history.json） |
 | `./sessions/` | Telegram session 文件 |
 | `./temp/` | 下载临时文件 |
@@ -168,6 +174,6 @@ proxy:
 1. **容器无法启动** — 检查 `docker-compose logs`
 2. **无法连接 Telegram** — 检查代理配置，确保容器能访问 `149.154.167.50:443`
 3. **下载失败** — 在 Web UI 的"失败"Tab 查看具体原因
-4. **权限问题** — 确保挂载目录有写入权限
+4. **权限问题** — 在 `.env` 或 compose 里设置 `PUID`/`PGID` 为 NAS 共享目录属主（`id` 查看），不要对整个下载库做 `chown -R`
 5. **session 丢失** — 确保 `./sessions/` 目录已正确挂载
 6. **FLOOD_WAIT** — 频道消息过多触发了 Telegram 限速，等待冷却后自动恢复

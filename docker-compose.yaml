@@ -1,5 +1,6 @@
 services:
   hermes-telegram-downloader:
+    image: ${DOCKERHUB_USERNAME:-izumiko}/hermes-telegram-downloader:latest
     build: .
     container_name: hermes-telegram-downloader
     network_mode: bridge
@@ -9,6 +10,8 @@ services:
       - "5000:5000"
     environment:
       - TZ=Asia/Shanghai
+      - PUID=${PUID:-0}
+      - PGID=${PGID:-0}
       - http_proxy=socks5://172.17.0.1:1080
       - https_proxy=socks5://172.17.0.1:1080
     volumes:
@@ -17,6 +20,7 @@ services:
       # 配置文件
       - "./config.yaml:/app/config.yaml"
       - "./data.yaml:/app/data.yaml"
+      - "./bot.yaml:/app/bot.yaml"
       # 日志
       - "./log:/app/log/"
       # Telegram session

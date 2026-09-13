@@ -400,6 +400,7 @@ git pull && docker-compose build && docker-compose up -d
 | `./downloads/` | Downloaded files |
 | `./config.yaml` | Config file |
 | `./data.yaml` | Runtime data (ids_to_retry, etc.) |
+| `./bot.yaml` | Bot runtime config (filters, etc.) |
 | `./log/` | Logs + task persistence (bot_tasks.json / task_counter.json / download_history.json) |
 | `./sessions/` | Telegram session files |
 | `./temp/` | Download temp files |
