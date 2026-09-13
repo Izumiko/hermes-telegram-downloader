@@ -4,37 +4,23 @@ services:
     build: .
     container_name: hermes-telegram-downloader
     network_mode: bridge
-    stdin_open: true
-    tty: true
     ports:
       - "5000:5000"
     environment:
       - TZ=Asia/Shanghai
       - PUID=${PUID:-0}
       - PGID=${PGID:-0}
-      - http_proxy=socks5://172.17.0.1:1080
-      - https_proxy=socks5://172.17.0.1:1080
     volumes:
-      # 下载目录 (修改为你的实际路径)
-      - "./downloads:/app/downloads/"
       # 配置文件
       - "./config.yaml:/app/config.yaml"
       - "./data.yaml:/app/data.yaml"
       - "./bot.yaml:/app/bot.yaml"
+      # 下载目录 (修改为你的实际路径)
+      - "./downloads:/app/downloads/"
       # 日志
       - "./log:/app/log/"
       # Telegram session
       - "./sessions:/app/sessions"
       # 临时文件
       - "./temp:/app/temp"
-      # 模块文件覆盖
-      - "./src/hermes_telegram_downloader/module/download_stat.py:/app/src/hermes_telegram_downloader/module/download_stat.py"
-      - "./src/hermes_telegram_downloader/module/web.py:/app/src/hermes_telegram_downloader/module/web.py"
-      - "./src/hermes_telegram_downloader/module/templates/index.html:/app/src/hermes_telegram_downloader/module/templates/index.html"
-      - "./src/hermes_telegram_downloader/module/static:/app/src/hermes_telegram_downloader/module/static"
-      - "./src/hermes_telegram_downloader/module/bot.py:/app/src/hermes_telegram_downloader/module/bot.py"
-      - "./src/hermes_telegram_downloader/module/tg:/app/src/hermes_telegram_downloader/module/tg"
-      - "./src/hermes_telegram_downloader/module/task_store.py:/app/src/hermes_telegram_downloader/module/task_store.py"
-      - "./src/hermes_telegram_downloader/module/app.py:/app/src/hermes_telegram_downloader/module/app.py"
-      - "./src/hermes_telegram_downloader/media_downloader.py:/app/src/hermes_telegram_downloader/media_downloader.py"
     restart: unless-stopped
