@@ -6,7 +6,7 @@
 
 <p align="center">
 <a href="https://github.com/MangoIsIllegal/hermes-telegram-downloader/blob/main/LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
-<a href="https://github.com/MangoIsIllegal/hermes-telegram-downloader/releases"><img alt="Version" src="https://img.shields.io/badge/version-3.0.2-blue"></a>
+<a href="https://github.com/MangoIsIllegal/hermes-telegram-downloader/releases"><img alt="Version" src="https://img.shields.io/badge/version-3.0.3-blue"></a>
 <a href="https://www.python.org/downloads/"><img alt="Python" src="https://img.shields.io/badge/python-3.11+-blue"></a>
 <a href="https://hub.docker.com/"><img alt="Docker" src="https://img.shields.io/badge/docker-ready-blue"></a>
 </p>
@@ -442,7 +442,7 @@ git pull && docker-compose build && docker-compose up -d
 | **日志** | 单文件 | `tdl.log` + `download.log`，10MB 轮转，30 天保留 |
 | **Bot 通知** | 简单状态 | 下载进度 + 完成文件列表 + 失败原因 + 限速暂停 + 恢复通知 |
 | **Docker** | 单阶段 | 多阶段构建（alpine），rclone 内置 |
-| **版本号** | v2.2.6 | v3.0.2（独立版本线） |
+| **版本号** | v2.2.6 | v3.0.3（独立版本线） |
 
 ---
 

@@ -6,7 +6,7 @@
 
 <p align="center">
 <a href="https://github.com/MangoIsIllegal/hermes-telegram-downloader/blob/main/LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
-<a href="https://github.com/MangoIsIllegal/hermes-telegram-downloader/releases"><img alt="Version" src="https://img.shields.io/badge/version-3.0.2-blue"></a>
+<a href="https://github.com/MangoIsIllegal/hermes-telegram-downloader/releases"><img alt="Version" src="https://img.shields.io/badge/version-3.0.3-blue"></a>
 <a href="https://www.python.org/downloads/"><img alt="Python" src="https://img.shields.io/badge/python-3.11+-blue"></a>
 <a href="https://hub.docker.com/"><img alt="Docker" src="https://img.shields.io/badge/docker-ready-blue"></a>
 </p>
@@ -442,7 +442,7 @@ Based on [tangyoha/telegram_media_downloader](https://github.com/tangyoha/telegr
 | **Logging** | Single file | `tdl.log` + `download.log`, 10MB rotation, 30-day retention |
 | **Bot notifications** | Simple status | Progress + completed file list + failure reasons + rate limit + recovery |
 | **Docker** | Single stage | Multi-stage build (alpine), rclone built-in |
-| **Version** | v2.2.6 | v3.0.2 (independent line) |
+| **Version** | v2.2.6 | v3.0.3 (independent line) |
 
 ---
 

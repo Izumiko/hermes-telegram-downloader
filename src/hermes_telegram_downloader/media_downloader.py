@@ -221,9 +221,32 @@ def _media_attr(media_obj, field):
     return None
 
 
+def _looks_like_video(media_obj, message=None) -> bool:
+    mime = (_media_mime(media_obj) or "").lower()
+    if mime.startswith("video/"):
+        return True
+    name = (_media_file_name(media_obj) or "").lower()
+    if name.endswith((".mp4", ".mkv", ".mov", ".webm", ".avi", ".ts", ".m4v")):
+        return True
+    if message is not None and getattr(message, "video", None) is not None:
+        return True
+    for attr in getattr(media_obj, "attributes", None) or []:
+        if type(attr).__name__ == "DocumentAttributeVideo":
+            return True
+    return False
+
+
 def _message_media_attr(message, _type):
     if _type == "animation":
         return getattr(message, "gif", None) or getattr(message, "animation", None)
+    if _type == "video":
+        media = getattr(message, "video", None)
+        if media is not None:
+            return media
+        doc = getattr(message, "document", None)
+        if doc is not None and _looks_like_video(doc, message):
+            return doc
+        return None
     media = getattr(message, _type, None)
     if media is None:
         return None
@@ -234,6 +257,7 @@ def _message_media_attr(message, _type):
         or getattr(message, "video_note", None)
         or getattr(message, "gif", None)
         or getattr(message, "sticker", None)
+        or _looks_like_video(media, message)
     ):
         return None
     return media
@@ -427,6 +451,10 @@ async def _get_media_meta(
     mime = _media_mime(media_obj)
     if _type in ["audio", "document", "video"]:
         file_format: str | None = mime.split("/")[-1] if mime else None
+        if not file_format:
+            name = _media_file_name(media_obj) or ""
+            if "." in name:
+                file_format = name.rsplit(".", 1)[-1].lower()
     else:
         file_format = None
 
@@ -765,24 +793,27 @@ async def download_media(
             if app.hide_file_name:
                 ui_file_name = f"****{os.path.splitext(file_name)[-1]}"
 
-            if _can_download(_type, file_formats, file_format):
-                if _is_exist(file_name):
-                    file_size = os.path.getsize(file_name)
-                    if media_size > 0 and file_size >= media_size:
-                        logger.info(
-                            f"id={message.id} {ui_file_name} "
-                            f"{_t('already download,download skipped')}."
-                        )
-                        return DownloadStatus.SkipDownload, None, ""
-                    elif 0 < file_size < media_size:
-                        os.makedirs(os.path.dirname(temp_file_name), exist_ok=True)
-                        os.replace(file_name, temp_file_name)
-                        logger.info(
-                            f"id={message.id} {ui_file_name} "
-                            f"partial file {file_size}/{media_size}, resuming"
-                        )
-            else:
-                return DownloadStatus.SkipDownload, None, ""
+            if not _can_download(_type, file_formats, file_format):
+                logger.info(
+                    f"Message[{message.id}]: skip {_type} format {file_format}"
+                )
+                _media = None
+                continue
+            if _is_exist(file_name):
+                file_size = os.path.getsize(file_name)
+                if media_size > 0 and file_size >= media_size:
+                    logger.info(
+                        f"id={message.id} {ui_file_name} "
+                        f"{_t('already download,download skipped')}."
+                    )
+                    return DownloadStatus.SkipDownload, None, ""
+                elif 0 < file_size < media_size:
+                    os.makedirs(os.path.dirname(temp_file_name), exist_ok=True)
+                    os.replace(file_name, temp_file_name)
+                    logger.info(
+                        f"id={message.id} {ui_file_name} "
+                        f"partial file {file_size}/{media_size}, resuming"
+                    )
             break
     except Exception as e:
         logger.error(

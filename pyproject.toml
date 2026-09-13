@@ -1,6 +1,6 @@
 [project]
 name = "hermes-telegram-downloader"
-version = "3.0.2"
+version = "3.0.3"
 description = "Telegram 媒体下载 / 转发 / 监听工具，带任务持久化 + 崩溃恢复 + 现代 WebUI"
 readme = "README.md"
 license = { text = "MIT" }
